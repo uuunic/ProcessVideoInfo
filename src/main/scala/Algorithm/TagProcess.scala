@@ -81,7 +81,7 @@ object TagProcess {
         (vid1, tf)
     }
     // 减少内存占用，先释放掉
-    rdd.unpersist()
+    //rdd.unpersist()
 
     //    newSTF.cache()
     //   newSTF.take(10).foreach(println)
@@ -97,6 +97,21 @@ object TagProcess {
     videoIDF.toDF.write.mode("overwrite").parquet(temp_file_path)
     return temp_file_path
   }
+
+  def get_cartesian(spark:SparkSession, inputPath:String, outputPath:String) : Int = {
+    import spark.implicits._
+    val videoIDF  = spark.read.parquet(inputPath)
+    val  videoIDF_rename = videoIDF
+//      .withColumnRenamed("_1", "vid")
+//      .withColumnRenamed("_2", "idf")
+        .withColumn("_3", videoIDF.col("_2"))
+
+    println("idf transform done! broadcast done! show video_idf: ")
+    //  broadcastIDF.show(10)
+    videoIDF_rename.show(10)
+    return 0
+  }
+
 
   def process_video_info(spark: SparkSession, inputPath:String, outputPath:String) : Int = {
     import spark.implicits._
@@ -166,6 +181,7 @@ object TagProcess {
     //docSims.saveAsTextFile(outputPath + "/save_file")
 
     val simRdd_temp= docSims.toDF
+
 
   //  simRdd_temp.show(10)
 
@@ -291,8 +307,10 @@ object TagProcess {
     val inputPath = args(0)
     val outputPath = args(1)
     println("------------------[begin]-----------------")
-    val temp_file_path = get_tf_idf(spark, inputPath, outputPath)
-    process_video_info(spark, temp_file_path, outputPath)
+    //val temp_file_path = get_tf_idf(spark, inputPath, outputPath)
+    //process_video_info(spark, temp_file_path, outputPath)
+    val temp_file_path = outputPath + "/temp_file/"
+    get_cartesian(spark, temp_file_path, outputPath)
     println("------------------[done]-----------------")
   }
 }
