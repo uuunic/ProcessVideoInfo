@@ -15,7 +15,7 @@ case class line_video_info(
                             tdbank_imp_date: String, //0
                             vid: String, //1
                             map_id: String, // '发布地图ID',2
-                            map_name: String, // '发布地图名称',3
+                            map_name: String, // '发布地图名称',3 正片
                             race_match_id: String, // '体育场次ID',4
                             race_competition_id: String, // '体育赛事ID',5
                             race_team_id: String, // '比赛队伍ID',6
@@ -71,7 +71,7 @@ case class line_video_info(
                             b_pay1080: String, // '是否1080p付费: 0不付费', 56
                             b_duration: String, // '时长', 57
                             b_episode_all: String, // '集数', 58
-                            b_state: String, // '状态', 59
+                            b_state: String, // '状态', 59 4为上架，8为下架
                             b_video_checkup_time: String, // '视频上架时间', 60
                             b_create_time: String, // '创建时间', 61
                             b_c_full: String, // '完整版标识', 62
@@ -195,7 +195,7 @@ case class line_cover_info(
                             b_description: String, // 58 COMMENT '简介',
                             b_drm: String, // 59 COMMENT '是否drm专辑',
                             b_time_long: String, // 60 COMMENT '时长',
-                            b_cover_checkup_grade: String, // 61 COMMENT '专辑状态',
+                            b_cover_checkup_grade: String, // 61 COMMENT '专辑状态',  0：未审核；4：已上架；8：已下架 100：已删除
                             b_real_pubtime: String, // 62 COMMENT '正片实际上线时间',
                             b_create_time: String, // 63 COMMENT '创建时间',
                             b_copyright_id: String, // 64  COMMENT '版权方ID',

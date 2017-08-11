@@ -1,6 +1,7 @@
 package Algorithm
 
 
+import com.huaban.analysis.jieba.SegToken
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.linalg.distributed.{CoordinateMatrix, RowMatrix}
 import org.apache.spark.mllib.stat.MultivariateStatisticalSummary
@@ -25,6 +26,7 @@ case class line_cid_info_usage(cid:String,       //1
 case class cid_clip(cid:String, clip:String)
 case class cid_vid(cid:String, vid:String)
 
+case class video_tag_infos(vid:String, tags: Array[String], tag_size:Int)
 object CidVidTagsProcess {
   def process_cid_info(spark: SparkSession, input_path: String, output_path: String, vid_input_path: String): Int = {
     val db_table_name = "table_cid_info"
@@ -136,7 +138,22 @@ object CidVidTagsProcess {
     println("------------------[begin]-----------------")
   //  val vid_idf_path: String = TagProcess.get_tf_idf(spark, vid_input_path, outputPath)
     val vid_input_path = "data/test/txt"
-    process_cid_info(spark, inputPath, outputPath, vid_input_path)
+  //  process_cid_info(spark, inputPath, outputPath, vid_input_path)
+    import com.huaban.analysis.jieba.JiebaSegmenter
+    import com.huaban.analysis.jieba.JiebaSegmenter.SegMode
+    val segmenter = new JiebaSegmenter
+
+    val sentences = Array[String]("我的.。；‘，《前半生》_》38", "极速之巅(英语版)", "九州天空城_01",
+      "我们的少年时代_37","鬼吹灯之黄皮子坟")
+    for (sentence <- sentences) {
+      val regex_str = """_\d+$""".r
+      if (regex_str.findFirstMatchIn(sentence) != None)
+        println("match: " + sentence.split("_", -1)(0))
+ //     System.out.println(segmenter.process(sentence, SegMode.INDEX).toString)
+      val data = segmenter.process(sentence, SegMode.SEARCH).toArray.map(line => line.asInstanceOf[SegToken].word).filter(!_.matches("\\pP")).filter(!_.equals(""))
+      data.foreach(line => println("line:" + line + " size:" + line.size))
+      
+    }
 
     println("------------------[done]-----------------")
   }
