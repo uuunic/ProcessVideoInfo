@@ -304,6 +304,7 @@ object TagProcess {
 
       val title_feature = line._2 //title_feature
       val title = new SparseVector[Double](title_feature.indices, title_feature.values, title_feature.size)
+
       val temp = title
       if (line._3 != null) {
         val tags_feature = line._3

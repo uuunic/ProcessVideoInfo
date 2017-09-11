@@ -249,7 +249,7 @@ object NewProcess {
     // 到这里为止为 vid tags tag_size
 
 
-    val hashingTF = new HashingTF().setInputCol("tags").setOutputCol("tag_raw_features").setNumFeatures(Math.pow(2, 22).toInt)
+    val hashingTF = new HashingTF().setInputCol("tags").setOutputCol("tag_raw_features").setNumFeatures(Math.pow(2, 25).toInt)
     val newSTF = hashingTF.transform(xid_info)
 
     println("tf done. begin idf")

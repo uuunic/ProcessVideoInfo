@@ -35,17 +35,18 @@ object VidCidWash {
 
   def put_to_redis(spark: SparkSession, input_path:String) : Unit = {
     import spark.implicits._
-    val rdd = spark.read.parquet(input_path).as[(String, String)] //要写入redis的数据，RDD[Map[String,String]]
+    val rdd = spark.read.parquet(input_path).filter($"cosSim" > 0.25).select($"vid", $"cid").as[(String, String)] //要写入redis的数据，RDD[Map[String,String]]
 
-    rdd.foreachPartition{iter =>
-      val redis = new Jedis("10.49.99.138", 9027, 4000)
+    rdd.repartition(1).foreachPartition { iter =>
+      val redis = new Jedis("10.49.99.138", 9027, 40000)
       val prefix: String = "113_"
       val hashkey = "cover_id"
-      val ppl = redis.pipelined()//使用pipeline 更高效的批处理
+      val ppl = redis.pipelined() //使用pipeline 更高效的批处理
 
-      iter.foreach{f=>
-        ppl.hset(prefix + f._1, hashkey, f._2 )
-      }
+      iter.foreach(f => {
+        val del_data = prefix + f._1
+        ppl.hset(del_data, hashkey, f._2)
+      })
       ppl.sync()
 
       redis.close()
@@ -70,11 +71,11 @@ object VidCidWash {
 
 
     val input_path = args(0)
-    val output_path = args(1)
+   // val output_path = args(1)
     println("------------------[begin]-----------------")
 
     //wash_vid_cid(spark, input_path, output_path)
-    put_to_redis(spark, output_path)
+    put_to_redis(spark, input_path)
     val redis = new Jedis("10.49.99.138", 9027, 4000)
     println("the redis size is: " + redis.dbSize())
     redis.close()

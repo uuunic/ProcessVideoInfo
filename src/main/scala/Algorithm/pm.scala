@@ -331,6 +331,45 @@ object pm {
 
   }
 
+  def get_click_data_from_3932(spark: SparkSession) : Unit = {
+    import spark.implicits._
+    val bucket_id_all = Array("2000", "50400", "50500", "50600", "50700")
+
+    for (date <-   (20170724 to 20170731) ++ (20170801 to 20170818)) {
+      val data_source_3932 = spark.read.parquet("/data/parquet/cron-3932/dt=" + date)
+      val kv_data3932 = data_source_3932.select($"kv").filter(line=>line.getAs[String](0).contains("detail_personal_recmd_feed_item"))
+
+
+
+      kv_data3932.createOrReplaceTempView("temp_db3932")
+      val data_res_all = kv_data3932
+        .sqlContext
+        .sql("select t.guid, t.reportParams, t.reportKey, t.vid, t.plat_bucketid, t.cid from temp_db3932 a lateral view json_tuple(kv, \"guid\", \"reportParams\", \"reportKey\", \"vid\", \"plat_bucketid\", \"cid\") t as guid, reportParams, reportKey, vid, plat_bucketid, cid")
+          .filter($"vid".isNotNull && $"vid" =!= "")
+        .cache
+      for (bucket_id <- bucket_id_all) {
+        val data_res = data_res_all.filter($"plat_bucketid" === bucket_id)
+
+
+        var algorithm_num = 0
+//        if (bucket_id == "2000") {
+//          algorithm_num = 0
+//        } else {
+//          algorithm_num = data_res
+//            .filter($"reportParams".contains("algid=search_pull_long")).count.toInt
+//        }
+        val total_num = data_res
+          .count.toInt
+
+        val idx_num = data_res.filter($"reportParams".contains("&video_idx=0&")).count.toInt
+
+        printf("at bucket: %s, at date: %d, total_num: %d, algorithm_num: %d, idx_0_num: %d\n", bucket_id, date, total_num, algorithm_num, idx_num)
+      }
+      printf("\n")
+      data_res_all.unpersist()
+    }
+  }
+
 
   def main(args: Array[String]): Unit = {
 

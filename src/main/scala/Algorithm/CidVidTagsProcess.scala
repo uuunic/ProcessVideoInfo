@@ -55,6 +55,7 @@ object CidVidTagsProcess {
     val cid_clips = df_usage.select("cid", "c_vclips").flatMap(line => {
       val cid = line.get(0).asInstanceOf[String]
       val clips = line.get(1).asInstanceOf[String].split("#").filter(_ != "")
+
       clips.map(clip => cid_clip(cid, clip))
     })
 
