@@ -1,6 +1,6 @@
 package Pm
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.functions._
 import Utils.Hash._
 
@@ -8,6 +8,7 @@ import Utils.Hash._
   * Created by baronfeng on 2017/9/5.
   */
 object TagVids {
+
   def get_vid_info(spark: SparkSession, input_path_pm: String, input_path_useful: String) : String = {
     import spark.implicits._
     val output_path = "pm_results/TagVids"

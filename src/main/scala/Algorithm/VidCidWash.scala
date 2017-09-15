@@ -1,11 +1,6 @@
 package Algorithm
 
-import org.apache.spark.sql.{Row, SparkSession}
-
-import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
-
-import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.spark.sql.SparkSession
 import redis.clients.jedis.Jedis
 
 /**
@@ -33,9 +28,10 @@ object VidCidWash {
     0
   }
 
-  def put_to_redis(spark: SparkSession, input_path:String) : Unit = {
+  def put_to_redis(spark: SparkSession, input_path:String, ip: String, port: Int, expire_time: Int, limit: Int = -1) : Unit = {
+    import redis.clients.jedis.Jedis
     import spark.implicits._
-    val rdd = spark.read.parquet(input_path).filter($"cosSim" > 0.25).select($"vid", $"cid").as[(String, String)] //要写入redis的数据，RDD[Map[String,String]]
+    val rdd = spark.read.parquet(input_path).filter($"cosSim" > 0.25).select($"vid", $"cid").as[(String, String)]. //要写入redis的数据，RDD[Map[String,String]]
 
     rdd.repartition(1).foreachPartition { iter =>
       val redis = new Jedis("10.49.99.138", 9027, 40000)
@@ -48,6 +44,7 @@ object VidCidWash {
         ppl.hset(del_data, hashkey, f._2)
       })
       ppl.sync()
+
 
       redis.close()
     }
@@ -75,7 +72,7 @@ object VidCidWash {
     println("------------------[begin]-----------------")
 
     //wash_vid_cid(spark, input_path, output_path)
-    put_to_redis(spark, input_path)
+    //put_to_redis(spark, input_path)
     val redis = new Jedis("10.49.99.138", 9027, 4000)
     println("the redis size is: " + redis.dbSize())
     redis.close()

@@ -13,6 +13,13 @@
     <scala.binary.version>2.11</scala.binary.version>
     <spark.community.version>2.1.1</spark.community.version>
   </properties>
+    <repositories>
+        <!-- list of other repositories -->
+        <repository>
+            <id>SparkPackagesRepo</id>
+            <url>http://dl.bintray.com/spark-packages/maven</url>
+        </repository>
+    </repositories>
   <dependencies>
     <dependency> <!-- Spark dependency -->
       <groupId>org.apache.spark</groupId>
@@ -45,12 +52,18 @@
       <artifactId>jieba-analysis</artifactId>
       <version>1.0.2</version>
     </dependency>
+
+
+
+
+
     <!--<dependency>&lt;!&ndash;  &ndash;&gt;-->
       <!--<groupId>com.hankcs</groupId>-->
       <!--<artifactId>hanlp</artifactId>-->
       <!--<version>portable-1.3.4</version>-->
     <!--</dependency>-->
   </dependencies>
+
 
 
   <build>

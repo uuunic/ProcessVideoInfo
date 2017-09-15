@@ -1,9 +1,8 @@
 package Pm
 
 import TagRecommender.TagRecommend.vid_idf_line
+import Utils.Hash
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.unsafe.hash.Murmur3_x86_32.hashUnsafeBytes
-import org.apache.spark.unsafe.types.UTF8String
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -11,28 +10,35 @@ import scala.collection.mutable.ArrayBuffer
   * Created by baronfeng on 2017/8/31.
   */
 object VidTags {
-  def hash(s: String, mod_num: Int = Math.pow(2, 24).toInt, seed: Int = 42) : Int = {
-    val utf8 = UTF8String.fromString(s)
 
-    val hashval = hashUnsafeBytes(utf8.getBaseObject, utf8.getBaseOffset, utf8.numBytes(), seed)
-    ((hashval % mod_num) + mod_num) % mod_num
-  }
 
   def get_vid_info(spark: SparkSession, input_path_pm: String, input_path_useful: String, output_path: String) : String = {
     import spark.implicits._
     spark.udf.register("tag_recognize",
-      (tags: Seq[String], indice: Seq[Int], datas: Seq[Double]) => {
-        if(tags == null || tags.isEmpty)
+      (tags_id: Seq[Long], tags_source: Seq[String], indice: Seq[Int], datas: Seq[Double]) => {
+        if(tags_id == null || tags_id.isEmpty)
           null
         else {
-          val ret_tags = new ArrayBuffer[(String, Double)]
-          for(tag<-tags.distinct){
-            val hash_value = hash(tag)
-            val index = indice.indexOf(hash_value)
-            val weight = datas(index)
-            ret_tags += ((tag, weight))
+          val ret_tags = new ArrayBuffer[(String, Long, Double)]
+          for(tag<-tags_source.distinct){
+            if(tag.contains("_inner")){
+              val tag_pure = tag.replace("_inner", "")
+              val hash_value = Hash.hash_own(tag_pure)
+              val hash_tf = Hash.hash_tf_idf(hash_value)
+              val index = indice.indexOf(hash_tf)
+              val weight = datas(index)
+              ret_tags append ((tag_pure, hash_value, weight))
+            } else {  //先锋id
+              val tag_data = tag.split("##", -1)
+              val tag_pure = tag_data(0)
+              val hash_value = if(tag_data.length == 1) tag_data(0).toLong else tag_data(1).toLong
+              val hash_tf = Hash.hash_tf_idf(hash_value)
+              val index = indice.indexOf(hash_tf)
+              val weight = datas(index)
+              ret_tags append ((tag_pure, hash_value, weight))
+            }
           }
-          ret_tags.sortWith(_._2> _._2).map(line=>line._1 + "#" + line._2.toString.substring(0,6)).mkString(";")
+          ret_tags.sortWith(_._3> _._3).map(line=>line._1 + "#" + line._2 + "#" + line._3.formatted("%.4f")).mkString(";")
         }
       })
 
@@ -42,11 +48,11 @@ object VidTags {
     val vids = spark.read.parquet(input_path_useful).as[vid_idf_line]
     //vid_want vid tags features_index features_data features_size
     vids.show()
-    val vid_join = vid_want.join(vids, vid_want("vid_want") === vids("vid"), "left")
-        .select("vid_want", "tags", "features_index", "features_data", "features_size")
+    val vid_join = vid_want.join(vids, vid_want("vid_want") === vids("vid"), "left").filter($"vid".isNotNull)
+        .select("vid_want", "tags", "features_index", "features_data", "tags_source")
     println("vid_join number: " + vid_join.count)
     vid_join.createOrReplaceTempView("temp_db")
-    val ret = spark.sqlContext.sql("select vid_want, tag_recognize(tags, features_index, features_data) from temp_db")
+    val ret = spark.sqlContext.sql("select vid_want, tag_recognize(tags, tags_source, features_index, features_data) from temp_db")
     ret.repartition(1).write.mode("overwrite").csv(output_path)
 
     println ("write to " + output_path)

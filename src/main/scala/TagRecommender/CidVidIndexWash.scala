@@ -3,10 +3,9 @@ package TagRecommender
 import java.text.SimpleDateFormat
 import java.util.Date
 
-import org.apache.commons.net.ntp.TimeStamp
+import Utils.{TestRedisPool, Tools}
+import Utils.Tools.KeyValueWeight
 import org.apache.spark.sql.{Row, SparkSession}
-
-import scala.collection.mutable.ArrayBuffer
 
 /**
   * Created by baronfeng on 2017/9/8.
@@ -95,16 +94,21 @@ object CidVidIndexWash {
       d.sortWith(_._4>_._4)
     })
 
-    spark.sqlContext.udf.register("cid_data_sort", (data: Seq[(String, String, Double, Long)]) => {
-      data.sortWith(_._4>_._4)
+
+    spark.sqlContext.udf.register("cid_tuple3", (cid: String, title_cid: String, cid_weight: Double) => {
+      (cid, title_cid, cid_weight)
     })
+
+
+
+
 
 
 
     // cid, title_cid, vid, title_vid, current_update_num, vid_num, weight
     val cid_vid_data = spark.read.parquet(cid_vid_path)
     // guid, vid, playduration, duration, sqrtx
-    val guid_data = spark.read.parquet(guid_path_daily).toDF("guid", "vid_t", "playduration", "duration", "sqrtx")
+    val guid_data = spark.read.parquet(guid_path_daily).toDF("guid", "vid_t", "playduration", "duration", "sqrtx").repartition(400)
     val join_data = guid_data.join(cid_vid_data, $"vid_t" === cid_vid_data("vid"), "left")
       .filter($"vid".isNotNull)
     join_data.createOrReplaceTempView("temp_db")
@@ -126,7 +130,16 @@ object CidVidIndexWash {
 
     guid_vid_cid_data.createOrReplaceTempView("guid_vid_cid_db")
     val guid_vid_data = spark.sql("select guid, vid_data_sort(collect_list(vid_data(vid, title_vid, vid_weight, update_time))) as vid_info from guid_vid_cid_db group by guid")
-    val guid_cid_data = spark.sql("select guid, cid, title_cid, sum(vid_weight) as cid_weight from guid_vid_cid_db group by guid, cid, title_cid order by sum(vid_weight)")
+
+    val cid_sql_inner_str = "select guid, cid, title_cid, sum(vid_weight) as cid_weight from guid_vid_cid_db group by guid, cid, title_cid "
+    val cid_sql_outer_str = "select guid, collect_list(cid_tuple3(cid, title_cid, cid_weight)) as cid_data from ( " + cid_sql_inner_str + " ) t group by guid"
+    val guid_cid_data = spark.sql(cid_sql_outer_str).map(line=>{
+      val guid = line.getString(0)
+      val cid_tuple3 = line.getAs[Seq[Row]](1).map(line => {
+        (line.getString(0), line.getString(1), line.getDouble(2))
+      }).sortWith(_._3>_._3)
+      (guid, cid_tuple3)
+    }).toDF
 
     val vid_result_path = output_path + "/vid_output"
     val cid_result_path = output_path + "/cid_output"
@@ -136,6 +149,56 @@ object CidVidIndexWash {
     println("done, result_path_cid: " + cid_result_path)
     cid_result_path
   }
+
+  def put_guid_vid_to_redis(spark: SparkSession, path : String): Unit = {
+    import spark.implicits._
+    val ip = "100.107.17.202"
+    val port = 9039
+    //val limit_num = 1000
+    val bzid = "uc"
+    val prefix = "G3"
+    val tag_type: Int = 2513
+    val data = spark.read.parquet(path).map(line=>{
+      val guid = line.getString(0)
+      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(2)))
+      KeyValueWeight(guid, value_weight)
+    }).filter(d => Tools.boss_guid.contains(d.key)).cache
+    //data.collect().foreach(line=>println(line.key))
+    //println("\n\n\n\n")
+    data.collect().foreach(println)
+
+    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
+
+  }
+
+  def put_guid_cid_to_redis(spark: SparkSession, path : String): Unit = {
+    import spark.implicits._
+    val ip = "100.107.17.202"
+    val port = 9039
+    //val limit_num = 1000
+    val bzid = "uc"
+    val prefix = "G3"
+    val tag_type: Int = 2512
+    val data = spark.read.parquet(path).map(line=>{
+      val guid = line.getString(0)
+      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(2)))
+      KeyValueWeight(guid, value_weight)
+    }).filter(d => Tools.boss_guid.contains(d.key)).cache()
+    //data.collect().foreach(line=>println(line.key))
+    //println("\n\n\n\n")
+
+    data.collect().foreach(println)
+    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("-------------[put_guid_cid_to_redis] to redis done, number: " + data.count)
+
+  }
+
+
   def main(args: Array[String]) {
 
     val spark = SparkSession
@@ -150,10 +213,11 @@ object CidVidIndexWash {
     val output_path = args(3)
     println("------------------[begin]-----------------")
 
-    val ret_path = output_path + "/cid_vid_list"
+    //val ret_path = output_path + "/cid_vid_list"
     //val ret_path = get_cid_vid_list(spark, cid_info_path, vid_info_path, output_path)
-    get_guid_vid_daily(spark, ret_path, guid_daily_path, output_path)
-
+    //get_guid_vid_daily(spark, ret_path, guid_daily_path, output_path)
+    put_guid_vid_to_redis(spark, output_path + "/vid_output")
+    put_guid_cid_to_redis(spark, output_path + "/cid_output")
 
     println("------------------[done]-----------------")
   }

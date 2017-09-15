@@ -1,23 +1,19 @@
 package TagRecommender
 
-import Algorithm.xid_tags_new
-import Utils.{Hash, Tools}
 import Utils.Hash._
+import Utils.Tools.KeyValueWeight
+import Utils.{Hash, TestRedisPool, Tools}
 import breeze.linalg.{SparseVector, norm}
 import com.huaban.analysis.jieba.JiebaSegmenter.SegMode
 import com.huaban.analysis.jieba.{JiebaSegmenter, SegToken}
-import org.apache.commons.codec.binary.Base64
-import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.feature.{HashingTF, IDF}
 import org.apache.spark.ml.linalg.{SparseVector => SV}
-import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
 import org.apache.spark.sql.expressions.UserDefinedFunction
+import org.apache.spark.sql.functions._
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-import org.apache.spark.sql.functions._
 
 
 
@@ -339,60 +335,12 @@ object TagRecommend {
     ret_path
   }
 
-  def process_4499(spark :SparkSession, inputPath:String): DataFrame ={
-    //base64解析 + json解析
-    if (inputPath == null || inputPath.equals("") || inputPath.equals("\t"))
-      return null
-    val parquet_4499 = spark.read.parquet(inputPath)
-    parquet_4499.createOrReplaceTempView("parquet_4499")
-    spark.sqlContext.udf.register("get_base64", (s:Array[Byte]) => new String(Base64.decodeBase64(s)))
-    val sql_text =
-      "select \"play\" as event_info, " +
-        "cast(idx as bigint), " +
-        "guid, " +
-        "cast(ts as long), " +
-        //            "cast(ftime as long), " +
-        "ftime," +
-        "\"\" as omgid, " +
-        "vid, " +
-        "platform , " +
-        "step as value1, " +
-        "case when step=50 then kv.playduration  " +
- //       "when step=0 then  kv.stime  " +
-        //            "when step=40 then  kv.tcount " +
-        "end as value2, " +
-        "case  when step=50 then duration  " +
- //       "when step=0 then \"\"   " +
-        //            "when step=40 then kv.tbcount " +
-        "end as value3, " +
-        "case when step=50 then  kv.etime  " +
-   //     "when step=0 then \"\"  " +
-        //            "when step=40 then  kv.tbduration " +
-        "end as value4, " +
-        "case when step=50 then kv.reason " +
-  //      " when step=0 then \"\"  " +
-        //            "when step=40 then \"\"  " +
-        "end as value5," +
-        "case  when step=50 then  kv.code  " +
-  //      "when step=0 then  kv.code  " +
-  //      "when step=40 then \"\"  " +
-        "end as value6, " +
-        "url as value7, " +
-        "flowid as value8, " +
-        "\"\" as value9, " +
-        "\"\" as value10 " +
-        "from parquet_4499 lateral view json_tuple(get_base64(`data`), \"reason\", \"etime\", \"playduration\", \"code\", \"stime\", \"tcount\", \"tbcount\", \"tbduration\") kv " +
-        "as reason, etime, playduration, code, stime, tcount, tbcount, tbduration  " +
-        "where step = 50 and  guid != ''and ts != ''"
-    val parquet_4499_res = spark.sqlContext.sql(sql_text)
-    return parquet_4499_res
-  }
+
 
   // input_path: args(2)
   // output_path: baronfeng/output/tag_recom_ver_1
   // return value: baronfeng/output/tag_recom_ver_1/guid_vid_weight
   def get_guid_tag_weight(spark: SparkSession, input_path:String, output_path: String) : String = {
-    import spark.implicits._
     println("---------[begin to collect guid vid weight]----------")
     //val guid_data = process_4499(spark, input_path)
     val guid_data = spark.read.parquet(input_path)
@@ -582,7 +530,6 @@ object TagRecommend {
   })
   // guid_path = baronfeng_video/output/tag_recom_ver_2      /dt=20170821/guid_vid_sv
   def monthly_guid_join(spark:SparkSession, guid_path: String, output_path: String) : Unit = {
-    import spark.implicits._
     // tags合并用
     spark.sqlContext.udf.register("flatten", (xs: Seq[Seq[String]]) => xs.flatten.distinct)
     // sparsevector 计算用
@@ -644,7 +591,141 @@ object TagRecommend {
     println("process guid data output_path: " + result_path + " done.")
   }
 
+// output_path + "/guid_total_result_30days"
+  def put_guid_tag_to_redis(spark: SparkSession, path : String): Unit = {
+    println("put guid_tag to redis")
+    import spark.implicits._
+    val ip = "100.107.17.202"   //sz1159.show_video_hb_online.redis.com
+    val port = 9039
+    //val limit_num = 1000
+    val bzid = "uc"
+    val prefix = "G1"
+    val tag_type: Int = 2501
+    val data = spark.read.parquet(path).map(line=>{
+      val guid = line.getString(0)
+      val value_weight = line.getAs[Seq[Row]](2)
+        val value_weight_res = {if(value_weight.length>100) value_weight.take(100) else value_weight}
+                .map(v=>(v.getLong(1).toString, v.getDouble(2))).distinct  //_1 tag _2 tag_id _3 weight
+      KeyValueWeight(guid, value_weight_res)
+    }).filter(d => Tools.boss_guid.contains(d.key)).cache
+    //data.collect().foreach(line=>println(line.key))
+    //println("\n\n\n\n")
+    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("put to redis done, number: " + data.count)
+
+  }
+
+  // output_path + "/tf_idf_wash_path"
+  def put_vid_tag_to_redis(spark: SparkSession, path : String): Unit = {
+    println("put vid_tag to redis")
+    import spark.implicits._
+    val ip = "100.107.17.229"    // zkname sz1163.short_video_tg2vd.redis.com  这个需要清空  真正要写的是sz1162.short_video_vd2tg.redis.com 我先改过来
+    val port = 9014
+    //val limit_num = 1000
+    val bzid = "sengine"
+    val prefix = "v0_sv_vd2tg"
+    val tag_type: Int = 2501
+    val data = spark.read.parquet(path).map(line=>{
+      val vid = line.getString(0)
+      val value_weight = line.getAs[Seq[Row]](2)
+
+        .map(v=>(v.getLong(1).toString, v.getDouble(2))).distinct.sortWith(_._2 > _._2) //_1 tag _2 tag_id _3 weight
+      val value_weight_res = if(value_weight.length > 100) value_weight.take(100) else value_weight
+      KeyValueWeight(vid, value_weight_res)
+    })
+    //data.collect().foreach(line=>println(line.key))
+    //println("\n\n\n\n")
+    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("put to redis done, number: " + data.count)
+
+  }
+
+  // output_path + "/tf_idf_wash_path"
+  def get_tag_vid_data(spark: SparkSession, path : String): Unit = {
+    val res_path = "temp_data/tag_vid_weight"
+
+    spark.sqlContext.udf.register("tuple_vid_weight", (vid: String, weight: Double)=> {  //(String, Long, Double)
+      (vid, weight)
+    })
+
+
+    println("put vid_tag to redis")
+    import spark.implicits._
+    val ip = "100.107.17.228"    // zkname sz1163.short_video_tg2vd.redis.com  这个需要清空  真正要写的是sz1162.short_video_vd2tg.redis.com 我先改过来
+    val port = 9012
+    //val limit_num = 1000
+    val bzid = "sengine"
+    val prefix = "v0_sv_tg2vd"
+    val tag_type: Int = 2501
+    val data = spark.read.parquet(path).map(line=>{
+      val vid = line.getString(0)
+      val value_weight = line.getAs[Seq[Row]](2)
+
+        .map(v=>(v.getLong(1).toString, v.getDouble(2))) //_1 tag _2 tag_id _3 weight
+
+      KeyValueWeight(vid, value_weight)
+    })
+      .flatMap(line=>{
+        val vid = line.key
+        val value_weight = line.value_weight
+        value_weight.map(tagid_weight => {(vid, tagid_weight._1, tagid_weight._2)})
+      }).toDF("vid", "tag_id", "weight")
+
+    data.createOrReplaceTempView("temp_db")
+
+    val res_data = spark.sql("select tag_id, collect_list(tuple_vid_weight(vid, weight)) from temp_db group by tag_id")
+      .map(line =>{
+        val tag_id = line.getString(0)
+        val vid_weight = line.getAs[Seq[Row]](1).map(d=>{(d.getString(0), d.getDouble(1))}).sortWith(_._2>_._2)
+        val vid_weight_res = if(vid_weight.length>5000) vid_weight.take(5000) else vid_weight
+        KeyValueWeight(tag_id, vid_weight_res)
+      })
+
+    res_data.write.mode("overwrite").parquet(res_path)
+
+    //data.collect().foreach(line=>println(line.key))
+    //println("\n\n\n\n")
+//    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+//    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+//    Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("put to redis done, number: " + res_data.count)
+
+  }
+
+  // output_path + "/tf_idf_wash_path"
+  def put_tag_vid_to_redis(spark: SparkSession, path : String): Unit = {
+    val res_path = "temp_data/tag_vid_weight"
+
+
+
+    println("put tag_vid to redis")
+    import spark.implicits._
+
+    val ip = "100.107.17.228"    // zkname sz1163.short_video_tg2vd.redis.com  这个需要清空  真正要写的是sz1162.short_video_vd2tg.redis.com 我先改过来
+    val port = 9012
+    //val limit_num = 1000
+    val bzid = "sengine"
+    val prefix = "v0_sv_tg2vd"
+    val tag_type: Int = 2501
+    val data = spark.read.parquet(res_path).as[KeyValueWeight]
+
+    //data.collect().foreach(line=>println(line.key))
+    //println("\n\n\n\n")
+    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("put to redis done, number: " + data.count)
+
+  }
+
+
+
   def main(args: Array[String]) {
+
 
     /**
       * step1. create SparkSession object
@@ -678,7 +759,7 @@ object TagRecommend {
     val idf_output_path = output_path + "/vid_idf"
     //val idf_output_path = tf_idf_join(spark, idf_source_output_path, output_path)
 
-    tf_idf_to_tuple(spark, idf_output_path, output_path)
+   // tf_idf_to_tuple(spark, idf_output_path, output_path)
 
     //val guid_output_data = output_path + "/guid_vid_weight"
     //val guid_output_data = get_guid_tag_weight(spark, guid_input_path, output_path)
@@ -689,10 +770,15 @@ object TagRecommend {
     //return value: baronfeng/output/tag_recom_ver_1/guid_vid_sv
     //val result_path = guid_vid_sv_join(spark, guid_output_data, idf_output_path, output_path)
     //println("done, result_path: " + result_path)
-    monthly_guid_wash(spark, vid_input_path, guid_input_path, output_path)
+
+    //monthly_guid_wash(spark, vid_input_path, guid_input_path, output_path)
 
     val guid_path = output_path
-    monthly_guid_join(spark, guid_path, output_path)
+    //monthly_guid_join(spark, guid_path, output_path)
+
+    //put_vid_tag_to_redis(spark, output_path + "/tf_idf_wash_path")
+    //put_guid_tag_to_redis(spark, output_path + "/guid_total_result_30days")
+    put_tag_vid_to_redis(spark, output_path + "/tf_idf_wash_path")
     println("------------------[done]-----------------")
   }
 
