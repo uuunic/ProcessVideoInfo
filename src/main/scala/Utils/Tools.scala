@@ -13,7 +13,8 @@ import scala.collection.mutable.ArrayBuffer
   */
 object Tools {
 
-  val boss_guid = Array("9184e76550f51034a4d780fbd42c850a",
+  val boss_guid = Array(
+    "9184e76550f51034a4d780fbd42c850a",
     "5effa45308271035a4d780fbd48ad00a",
     "3677833c44e6103595a880fbd48ad00a",
     "9162462f1c871035a4d780fbd42c850a",
@@ -30,6 +31,25 @@ object Tools {
     "1f00c3638ff011e79d19a042d42c850a",
     "7b202337979811e79d19a0429186d00a",
     "9887eb1090e91032bbcf80fbe202bb0a",
+    "c2a452df31d31035a0e080fb9186d00a",
+    "d68e02a30b6a1035a4d780fbd42c850a",
+    "8b00615f9bc11034a4d780fbd42c850a",
+    "36d9bf5124781034a4d780fb9186d00a",
+    "86715224c4831030b355d48564437054",
+    "11ed19b894c411e3b068abcd0e8dd00a",
+    "b59150bd4f4a1035a73980fbd42c850a",
+    "1ccfb00d87e711e79d19a042d42c850a",
+    "6167e776ce6b11e385efabcd0296bb0a",
+    "3e7241e4c0ba1035874680fbd48ad00a",
+    "5729a6109fe51034a4d780fbd48ad00a",
+    "fec7dace70461033bbcf80fb0722850a",
+    "9184e76550f51034a4d780fbd42c850a",
+    "2cfb5cf6335d1035a2e680fbd42c850a",
+    "cfcbacb4b4371035b62080fbd48ad00a",
+    "c9d4edbf679140ab9a12142b67941cf6",
+    "ff093425bbd21033a4d780fbd48ad00a",
+    "580a59ecdb2a1033a4d780fb5201850a",
+    "a0fa9e910f0a1035a4d780fbd42c850a",
     "c2a452df31d31035a0e080fb9186d00a",
     "d68e02a30b6a1035a4d780fbd42c850a",
     "8b00615f9bc11034a4d780fbd42c850a").toSet
@@ -120,10 +140,11 @@ object Tools {
                    weight_format: String = "%.4f",
                    expire_time: Int = 400000,
                    limit_num: Int = -1) : Unit = {
+    println("put to redis.")
     val output = if(limit_num == -1) input else input.limit(limit_num)
 
     //要写入redis的数据，RDD[Map[String,String]]
-    output.repartition(20).foreachPartition { iter =>
+    output.repartition(30).foreachPartition { iter =>
       //val redis = new Jedis(ip, port, expire_time)
       val redis = broadcast_redis_pool.value.getRedisPool.getResource   // lazy 加载 应该可以用
       val ppl = redis.pipelined() //使用pipeline 更高效的批处理
@@ -131,19 +152,23 @@ object Tools {
       iter.foreach(f => {
         val key = bzid + "_" + prefix + "_" + f.key
         val values_data = f.value_weight.sortWith(_._2>_._2).map(line=>{
-          line._1 +
-       //     ":" + tag_type.toString +
+          line._1 + {
+             if(tag_type == -1)
+               ""
+             else
+               ":" + tag_type.toString
+          } +
             ":" + line._2.formatted(weight_format)
 
         })
         val keys = Array(key)
         //ppl.del(keys: _*)
         ppl.rpush(key, values_data: _*)
-        ppl.expire(key, 60*60*24*2)
+        ppl.expire(key, 60*60*24*7)
 
 
         count += 1
-        if(count % 10 == 0) {
+        if(count % 20 == 0) {
           ppl.sync()
         }
       })
@@ -161,10 +186,11 @@ object Tools {
                    weight_format: String = "%.4f",
                    expire_time: Int = 400000,
                    limit_num: Int = -1) : Unit = {
+    println("redis delete")
     val output = if(limit_num == -1) input else input.limit(limit_num)
 
     //要写入redis的数据，RDD[Map[String,String]]
-    output.repartition(20).foreachPartition { iter =>
+    output.repartition(50).foreachPartition { iter =>
       //val redis = new Jedis(ip, port, expire_time)
       val redis = broadcast_redis_pool.value.getRedisPool.getResource   // lazy 加载 应该可以用
     val ppl = redis.pipelined() //使用pipeline 更高效的批处理
@@ -182,7 +208,7 @@ object Tools {
 
 
         count += 1
-        if(count % 10 == 0) {
+        if(count % 30 == 0) {
           ppl.sync()
         }
       })

@@ -1,11 +1,10 @@
-package TagRecommender
+package BasicData
 
 import TagRecommender.TagRecommend.vid_idf_line
-import breeze.linalg.{SparseVector, norm}
+import Utils.{Defines, TestRedisPool, Tools}
+import Utils.Tools.KeyValueWeight
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions.udf
 
-import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
 
@@ -19,7 +18,7 @@ object VidVidRecommander {
   // output_path: baronfeng/output/tag_recom_ver_1/vid_vid_recomm
   // filter_vid_path: /user/chenxuexu/vid_filter_v1/valid_vid_0830
   // return value: output_path
-  val TAG_HASH_LENGTH = Math.pow(2, 24).toInt  // 目前暂定2^24为feature空间
+  val TAG_HASH_LENGTH = Defines.TAG_HASH_LENGTH  // 目前暂定2^24为feature空间
 
   def vid_filter(spark: SparkSession, video_info_path: String, filter_vid_path: String, output_path: String) : String = {
     println("--------------[begin to process vid filter]--------------")
@@ -95,60 +94,32 @@ object VidVidRecommander {
 
     ret_path
   }
-/**
-  def vid_vid_recomm(spark: SparkSession, input_path: String, sub_path: String, filter_vid_path: String): String = {
+
+  def put_vid_vid_to_redis(spark: SparkSession, path : String): Unit = {
     import spark.implicits._
-    spark.udf.register("array_intersect",
-      (xs: Seq[Int], ys: Seq[Int]) => xs.intersect(ys).nonEmpty)
+    val ip = "100.107.17.216"
+    val port = 9020
+    //val limit_num = 1000
+    val bzid = "sengine"
+    val prefix = "v0_sv_nr_vid"
+    val tag_type: Int = -1
+    val data = spark.read.parquet(path).filter($"number" === 1).select($"vid1", $"vid2", $"sim").map(line=>{
+      val vid1 = line.getString(0)
+      val vid2 = line.getString(1)
+      val similarity = line.getDouble(2)
+      val value_weight = Array((vid2, similarity))
+      KeyValueWeight(vid1, value_weight)
+    })
+      //  .filter(d => Tools.boss_guid.contains(d.key))
+      .cache
 
-    spark.udf.register("cos_similar",
-      (l_index:Seq[Int], l_data:Seq[Double],  r_index: Seq[Int], r_data: Seq[Double]) => {
-        val l = new SparseVector[Double](l_index.toArray, l_data.toArray, TAG_HASH_LENGTH)
-        val r = new SparseVector[Double](r_index.toArray, r_data.toArray, TAG_HASH_LENGTH)
-
-        l.dot(r) / (norm(l) * norm(r))
-
-      })
-
-
-    val output_path = input_path+ "/vid_vid_recomm"
-    val whole_input_path = (input_path + "/" + sub_path).replace("//", "/")
-    val vid_sv_data = spark.read.parquet(whole_input_path).as[vid_idf_line]
-
-    val vid_useful = spark.read.parquet(filter_vid_path).toDF("vid_useful").as[String]
-
-    val useful_vid_sv = vid_sv_data
-      .join(vid_useful, vid_sv_data("vid") === vid_useful("vid_useful"), "left")
-      .filter($"vid_useful".isNotNull)
-      .select($"vid", $"tags", $"features_index", $"features_data", $"features_size").repartition(80).cache()
-    println("recomm vid num is: " + useful_vid_sv.count())
-    val useful_vid_sv2 = useful_vid_sv.toDF("vid2", "tags2", "features_index2", "features_data2", "features_size2").repartition(80).cache()
-
-    useful_vid_sv.createOrReplaceTempView("vid_db1")
-    useful_vid_sv2.createOrReplaceTempView("vid_db2")
-
-
-    val sql_inner = "select db1.vid as vid1, db1.tags as tags1, db1.features_index as features_index1, db1.features_data as features_data1, db2.vid2 as vid2, db2.tags2 as tags2, db2.features_index2 as features_index2, db2.features_data2 as features_data2" +
-      " from vid_db1 db1 full outer join vid_db2 db2 on (array_intersect(db1.features_index, db2.features_index2)=TRUE and db1.vid != db2.vid2)"
-
-    val sql_outer = "select vid1, vid2, tags1, tags2, cos_similar(features_index1, features_data1, features_index2, features_data2) as cosx from (" +
-                     sql_inner + ") where cos_similar(features_index1, features_data1, features_index2, features_data2) > 0.2"
-
-    println("get vid matches data")
-    spark.sqlContext.sql(sql_inner).show
-
-    val ret_data = spark.sqlContext.sql(sql_outer)
-
-    println("begin to write to " + output_path)
-    ret_data.write.mode("overwrite").parquet(output_path)
-    println("write cosSimilarity done")
-
-    output_path
+    data.show()
+    val test_redis_pool = new TestRedisPool(ip, port, 40000)
+    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
 
   }
-
-
-**/
 
 
   def main(args: Array[String]) {
@@ -161,7 +132,7 @@ object VidVidRecommander {
 
     val spark = SparkSession
       .builder
-      .appName("spark-vid-tag")
+      .appName("vid-vid-recomm")
       //     .master("local")
       .getOrCreate()
 
@@ -173,9 +144,14 @@ object VidVidRecommander {
     val filter_path = args(1)
     val output_path = args(2)
     val tag_df_length = args(3).toInt
+    println("------------------[begin]-----------------")
     val filter_data_path = output_path + "/vid_cleaned"
     //val filter_data_path = vid_filter(spark: SparkSession, video_info_path = input_path, filter_vid_path = filter_path, output_path)
-    vid_vid_recomm_v2(spark, tag_df_length, output_path)
+    //vid_vid_recomm_v2(spark, tag_df_length, output_path)
+
+    val vid_vid_path = output_path + "/vid_vid_recomm"
+    put_vid_vid_to_redis(spark, vid_vid_path)
+
 
 
     println("------------------[done]-----------------")

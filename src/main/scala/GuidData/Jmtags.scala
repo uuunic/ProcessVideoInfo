@@ -1,13 +1,13 @@
-package TagRecommender
+package GuidData
 
-import Utils.Tools.KeyValueWeight
 import Utils.{TestRedisPool, Tools}
+import Utils.Tools.KeyValueWeight
 import org.apache.spark.sql.{Row, SparkSession}
 
 /**
-  * Created by baronfeng on 2017/9/8.
+  * Created by baronfeng on 2017/9/18.
   */
-object CidVidIndexWash {
+object Jmtags {
   /**
     * 从cid_info和vid_info那里取得各项数据，并联立成表
     *
@@ -36,7 +36,7 @@ object CidVidIndexWash {
 
       .filter(arr => arr(61) == "4") //_(61)是b_cover_checkup_grade 要未上架的和在线的
       .filter(arr => arr(84) != "")  //119为碎视频列表，84为长视频列表，我这里一并做一个过滤
-        .filter(arr => arr(3).contains("正片"))  // 只找正片cid
+      .filter(arr => arr(3).contains("正片"))  // 只找正片cid
       .flatMap(arr => {
       val cid = arr(1)
       val video_ids = arr(84).split("#", -1)
@@ -54,7 +54,7 @@ object CidVidIndexWash {
       .map(_.split("\t", -1))
       .filter(_.length >107)
       .filter(_(59) == "4")
-        .filter(_(3).contains("正片"))
+      .filter(_(3).contains("正片"))
       .map(line => {
         val vid = line(1)
         val title = line(49)
@@ -68,7 +68,7 @@ object CidVidIndexWash {
         (vid, title, vid_num, drm_pay, pay_1080, duration, create_time, checkup_time, covers)
       }).toDF("vid_t", "title_vid", "vid_num", "drm_pay", "pay_1080", "duration", "create_time", "checkup_time", "covers")
 
-    println("begin to write to output_path: " + output_path)
+    println("begin to write cid_vid_list to output_path: " + output_path)
     val cid_vid_data = cid_info.join(vid_info, $"vid" === vid_info("vid_t"), "left").filter($"vid_t".isNotNull).drop($"vid_t")
 
     cid_vid_data.createOrReplaceTempView("temp_db")
@@ -79,18 +79,20 @@ object CidVidIndexWash {
     // vid的weight在这里计算
     val ret_data = spark.sql("select cid, title_cid, vid, title_vid, current_update_num, vid_num, weight(vid_num, current_update_num) as weight, unix_timestamp(checkup_time) as update_time from result_db")
     ret_data.write.mode("overwrite").parquet(output_path)
+    println("write cid_vid_list done.")
   }
 
 
-  def get_guid_vid_daily(spark: SparkSession, cid_vid_path: String, guid_path_daily: String, output_path: String) : String = {
+  def get_guid_vid_cid_data(spark: SparkSession, cid_vid_path: String, guid_path_daily: String, output_path: String) : String = {
     import spark.implicits._
+
     spark.sqlContext.udf.register("vid_data", (vid: String, vid_weight: Double) => {
       (vid, vid_weight)
     })
 
     spark.sqlContext.udf.register("vid_data_sort", (data: Seq[Row]) => {
-      val d = data.map(line => (line.getString(0), line.getString(1)))
-      d.sortWith(_._2>_._2)
+      val d = data.map(line => (line.getString(0), line.getDouble(1)))
+      d.sortBy(_._2)(Ordering[Double].reverse).take(200)
     })
 
 
@@ -104,7 +106,7 @@ object CidVidIndexWash {
     // guid, vid, playduration, duration, sqrtx
     val guid_data = spark.read.parquet(guid_path_daily).select($"guid", $"vid" as "vid_t", $"ts", $"percent").coalesce(400)
     val join_data = guid_data.join(cid_vid_data, $"vid_t" === cid_vid_data("vid"), "left")
-      .filter($"vid".isNotNull)
+      .filter($"vid".isNotNull).repartition(400)
 
     join_data.createOrReplaceTempView("temp_db")
 
@@ -127,30 +129,31 @@ object CidVidIndexWash {
       }).toDF("guid", "vid",  "cid", "vid_weight")
 
     guid_vid_cid_data.createOrReplaceTempView("guid_vid_cid_db")
-    val guid_vid_data = spark.sql("select guid, vid_data_sort(collect_list(vid_data(vid, vid_weight))) as vid_info from guid_vid_cid_db group by guid")
+ //   val guid_vid_data = spark.sql("select guid, vid_data_sort(collect_list(vid_data(vid, vid_weight))) as vid_info from guid_vid_cid_db group by guid")
 
     val cid_sql_inner_str = "select guid, cid, sum(vid_weight) as cid_weight from guid_vid_cid_db group by guid, cid "
     val cid_sql_outer_str = "select guid, collect_list(cid_tuple2(cid, cid_weight)) as cid_data from ( " + cid_sql_inner_str + " ) t group by guid"
     val guid_cid_data = spark.sql(cid_sql_outer_str).map(line=>{
       val guid = line.getString(0)
       val cid_tuple2 = line.getAs[Seq[Row]](1).map(line => {
-        (line.getString(0), line.getDouble(2))
-      }).sortWith(_._2>_._2)
+        (line.getString(0), line.getDouble(1))
+      }).sortBy(_._2)(Ordering[Double].reverse).take(200)
       (guid, cid_tuple2)
     }).toDF
 
     val vid_result_path = output_path + "/vid_output"
     val cid_result_path = output_path + "/cid_output"
-    guid_vid_data.write.mode("overwrite").parquet(vid_result_path)
+//    println("begin to write vid info to: " + vid_result_path)
+//    guid_vid_data.write.mode("overwrite").parquet(vid_result_path)
+    println("write vid info done, begin to write cid data to: "+ cid_result_path)
     guid_cid_data.write.mode("overwrite").parquet(cid_result_path)
-    println("done, result_path_vid: " + vid_result_path)
     println("done, result_path_cid: " + cid_result_path)
     cid_result_path
   }
 
   def put_guid_vid_to_redis(spark: SparkSession, path : String): Unit = {
     import spark.implicits._
-    val ip = "100.107.17.202"
+    val ip = "100.107.17.215"
     val port = 9039
     //val limit_num = 1000
     val bzid = "uc"
@@ -158,12 +161,12 @@ object CidVidIndexWash {
     val tag_type: Int = 2513
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(2)))
+      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(1)))
       KeyValueWeight(guid, value_weight)
-    }).filter(d => Tools.boss_guid.contains(d.key)).cache
-    //data.collect().foreach(line=>println(line.key))
-    //println("\n\n\n\n")
-    data.collect().foreach(println)
+    })
+    //  .filter(d => Tools.boss_guid.contains(d.key))
+      .cache
+
 
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
@@ -174,7 +177,7 @@ object CidVidIndexWash {
 
   def put_guid_cid_to_redis(spark: SparkSession, path : String): Unit = {
     import spark.implicits._
-    val ip = "100.107.17.202"
+    val ip = "100.107.17.215"
     val port = 9039
     //val limit_num = 1000
     val bzid = "uc"
@@ -182,13 +185,14 @@ object CidVidIndexWash {
     val tag_type: Int = 2512
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(2)))
+      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(1)))
       KeyValueWeight(guid, value_weight)
-    }).filter(d => Tools.boss_guid.contains(d.key)).cache()
-    //data.collect().foreach(line=>println(line.key))
-    //println("\n\n\n\n")
+    })
+    //  .filter(d => Tools.boss_guid.contains(d.key))
+      .cache()
 
-    data.collect().foreach(println)
+
+//    data.collect().foreach(println)
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
     Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
@@ -207,15 +211,17 @@ object CidVidIndexWash {
 
     val cid_info_path = args(0)
     val vid_info_path = args(1)
-    val guid_daily_path = args(2)
+    val guid_path = args(2)
     val output_path = args(3)
     println("------------------[begin]-----------------")
 
-    //val ret_path = output_path + "/cid_vid_list"
-    //val ret_path = get_cid_vid_list(spark, cid_info_path, vid_info_path, output_path)
-    //get_guid_vid_daily(spark, ret_path, guid_daily_path, output_path)
+    val cid_vid_path = output_path + "/cid_vid_list"
+//    get_cid_vid_list(spark, cid_info_path, vid_info_path, cid_vid_path)
+
+    val result_path = output_path
+//    get_guid_vid_cid_data(spark, cid_vid_path, guid_path, result_path)
     put_guid_vid_to_redis(spark, output_path + "/vid_output")
-    put_guid_cid_to_redis(spark, output_path + "/cid_output")
+ //   put_guid_cid_to_redis(spark, output_path + "/cid_output")
 
     println("------------------[done]-----------------")
   }

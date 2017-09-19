@@ -2,4 +2,9 @@
 ### Scala template
 *.class
 *.log
-
+data/
+lib/
+.idea/
+spark-warehouse/
+target/
+ProcessVideoInfo.iml

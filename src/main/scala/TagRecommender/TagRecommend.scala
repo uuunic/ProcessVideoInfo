@@ -14,6 +14,7 @@ import org.apache.spark.sql.functions._
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
+import Utils.Defines._
 
 
 
@@ -31,8 +32,8 @@ import scala.collection.mutable.ArrayBuffer
 
 
 object TagRecommend {
-  val TAG_HASH_LENGTH: Int = Math.pow(2, 24).toInt // 目前暂定2^24为feature空间
-  val STOP_WORDS_PATH: String = "/user/baronfeng/useful_dataset/stop_words.txt"
+
+
 
   val PIONEER_TAG_INDEX = 88  // 先锋标签的index位置
   val PIONEER_TAG_ID_INDEX = 89 //先锋标签对应的id位置
@@ -481,7 +482,7 @@ object TagRecommend {
     a ++ b
   }
 
-  case class cid_vidstr(cid:String, vidstr:String)
+
 
 
 
@@ -603,13 +604,13 @@ object TagRecommend {
     val tag_type: Int = 2501
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](2)
-        val value_weight_res = {if(value_weight.length>100) value_weight.take(100) else value_weight}
+      val value_weight = line.getAs[Seq[Row]](2).take(100)
                 .map(v=>(v.getLong(1).toString, v.getDouble(2))).distinct  //_1 tag _2 tag_id _3 weight
-      KeyValueWeight(guid, value_weight_res)
+      KeyValueWeight(guid, value_weight)
     }).filter(d => Tools.boss_guid.contains(d.key)).cache
     //data.collect().foreach(line=>println(line.key))
     //println("\n\n\n\n")
+    data.show()
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
     Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
@@ -630,10 +631,9 @@ object TagRecommend {
     val data = spark.read.parquet(path).map(line=>{
       val vid = line.getString(0)
       val value_weight = line.getAs[Seq[Row]](2)
-
         .map(v=>(v.getLong(1).toString, v.getDouble(2))).distinct.sortWith(_._2 > _._2) //_1 tag _2 tag_id _3 weight
-      val value_weight_res = if(value_weight.length > 100) value_weight.take(100) else value_weight
-      KeyValueWeight(vid, value_weight_res)
+        .take(100)
+      KeyValueWeight(vid, value_weight)
     })
     //data.collect().foreach(line=>println(line.key))
     //println("\n\n\n\n")
@@ -681,7 +681,7 @@ object TagRecommend {
       .map(line =>{
         val tag_id = line.getString(0)
         val vid_weight = line.getAs[Seq[Row]](1).map(d=>{(d.getString(0), d.getDouble(1))}).sortWith(_._2>_._2)
-        val vid_weight_res = if(vid_weight.length>5000) vid_weight.take(5000) else vid_weight
+        val vid_weight_res = vid_weight.take(5000)
         KeyValueWeight(tag_id, vid_weight_res)
       })
 
@@ -710,7 +710,7 @@ object TagRecommend {
     //val limit_num = 1000
     val bzid = "sengine"
     val prefix = "v0_sv_tg2vd"
-    val tag_type: Int = 2501
+    val tag_type: Int = -1  // 不需要字段中加入tag_type,就设置成-1
     val data = spark.read.parquet(res_path).as[KeyValueWeight]
 
     //data.collect().foreach(line=>println(line.key))
@@ -776,8 +776,8 @@ object TagRecommend {
     val guid_path = output_path
     //monthly_guid_join(spark, guid_path, output_path)
 
-    //put_vid_tag_to_redis(spark, output_path + "/tf_idf_wash_path")
-    //put_guid_tag_to_redis(spark, output_path + "/guid_total_result_30days")
+    put_vid_tag_to_redis(spark, output_path + "/tf_idf_wash_path")
+ //   put_guid_tag_to_redis(spark, output_path + "/guid_total_result_30days/*.parquet")
     put_tag_vid_to_redis(spark, output_path + "/tf_idf_wash_path")
     println("------------------[done]-----------------")
   }
