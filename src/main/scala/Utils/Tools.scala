@@ -108,7 +108,7 @@ object Tools {
   }
 
   /**
-    * 取得文件夹中最后一个文件，不验证此文件夹合法性
+    * 取得文件夹中最后一个文件，验证此文件夹合法性
     *
     * */
   def get_latest_subpath(spark: SparkSession, file_path: String) : String = {
@@ -124,9 +124,15 @@ object Tools {
     val max_str = time_sub_path.map(line=> (line, reg_str.findFirstIn(line).getOrElse("0").toInt)).sortWith(_._2>_._2)
     if (max_str.isEmpty || max_str(0)._2 == 0) {
       println("illegal input_path: " + file_path)
-      return ""
+      return null
     } else {
-      return file_path + "/" + max_str(0)._1
+      for(str<-max_str) {
+        val real_sub_path = file_path + "/" + str._1
+        if(is_flag_exist(spark, real_sub_path)) {
+          return file_path + "/" + max_str(0)._1
+        }
+      }
+      return null
     }
   }
 

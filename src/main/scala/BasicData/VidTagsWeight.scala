@@ -32,10 +32,10 @@ object VidTagsWeight {
   val vid_useful_col: Map[String, LineInfo] = Map(
     "pioneer_tag" -> LineInfo(PIONEER_TAG_INDEX, 2.0, "\\+|#", is_distinct = true),  //先锋标签只取id
     "tags" -> LineInfo(45, 1.0, "#", is_distinct = true),
-    "director" -> LineInfo(30, 1.0, "#", is_distinct = false),
-    "writer" -> LineInfo(32, 1.0, "#", is_distinct = false),
+ //   "director" -> LineInfo(30, 1.0, "#", is_distinct = false),   //keywords writers directors 数量太少，直接去掉
+ //   "writer" -> LineInfo(32, 1.0, "#", is_distinct = false),
     "guests" -> LineInfo(40, 1.0, "#", is_distinct = false),
-    "keywords" -> LineInfo(46, 1.0, "\\+", is_distinct = true),
+//    "keywords" -> LineInfo(46, 1.0, "\\+", is_distinct = true),
     "relative_stars" -> LineInfo(66, 1.0, "#", is_distinct = false),
     "stars_name" -> LineInfo(71, 1.0, "#", is_distinct = false),
     "sportsman" -> LineInfo(95, 1.0, "#", is_distinct = false),
@@ -80,7 +80,11 @@ object VidTagsWeight {
     val cid_tags_word = "cid_tags"
 
     val rdd = spark.sparkContext.textFile(vid_info_path)
-      .map(line => line.split("\t", -1)).filter(_.length > 116).filter(line => line(59) == "4").repartition(REPARTITION_NUM).cache()  // line(59) b_state
+      .map(line => line.split("\t", -1))
+      .filter(_.length > 116)
+      .filter(line => line(59) == "4") // 在线上
+          .filter(line=>line(1).length == 11) //vid长度为11
+      .repartition(REPARTITION_NUM).cache()  // line(59) b_state
 
 
     for((tag_name, info) <- vid_useful_col if tag_name != cid_tags_word) {
@@ -144,10 +148,10 @@ object VidTagsWeight {
       })
         .filter(line => {(!line.tags.isEmpty) && (line.tags.length > 0)}).toDS
 
-
-      println("get tags type: " + tag_name + " done.")
+      val ret_path = vid_tags_output_path + "/" + tag_name
+      printf("get tags type: %s done, write to: %s\n", tag_name, ret_path)
       //tag_info_line.show
-      tag_info_line.write.mode("overwrite").parquet(vid_tags_output_path + "/" + tag_name)
+      tag_info_line.write.mode("overwrite").parquet(ret_path)
 
     }
 
@@ -221,12 +225,15 @@ object VidTagsWeight {
     val hashingTF = new HashingTF().setInputCol("tags").setOutputCol("tag_raw_features").setNumFeatures(TAG_HASH_LENGTH)
     val idf = new IDF().setInputCol("tag_raw_features").setOutputCol("features")
 
-    for ((tag_name, vid_data) <- vid_useful_col) {
-      val tag_data = spark.read.parquet(vid_tags_path + "/" + tag_name).as[DsVidLine]
+    for (tag_name <- vid_useful_col.keys) {
+      printf(" begin [%s] idf", tag_name)
+      val tag_data = spark.read.parquet(vid_tags_path + "/" + tag_name).as[DsVidLine].cache()
 
+      printf(" read [%s] done, count: %d, begin process\n", tag_name, tag_data.count())
+     // tag_data.printSchema()
       val newSTF = hashingTF.transform(tag_data)
 
-      println("tf " + tag_name + " done. begin idf")
+
       //下面计算IDF的值
       val idfModel = idf.fit(newSTF)
       val rescaledData = idfModel.transform(newSTF)
@@ -285,7 +292,7 @@ object VidTagsWeight {
 
     println("begin to write vid_tags_total to path: " + join_output_path)
     vid_result.write.mode("overwrite").parquet(join_output_path)
-    println("--------[join all vid data done. begin to get guid vid weight]--------")
+    println("--------[join all vid data done.]--------")
   }
 
   // Row 特指目前的vid_info里面的row，之后可能会泛化。
@@ -374,8 +381,9 @@ object VidTagsWeight {
         val vid_weight_res = vid_weight.take(vid_length)
         KeyValueWeight(tag_id, vid_weight_res)
       })
-
+    res_data.repartition(400).write.mode("overwrite").parquet(tag_vid_output_path)
     println("get tag_vid data done, tag number: " + res_data.count)
+    println("--------[tag_vid data write done.]--------")
 
   }
 
@@ -462,7 +470,7 @@ object VidTagsWeight {
     val vid_tags_path = output_path + "/vid_tags/" + date_str
     vid_tag_shuffle(spark, vid_input_path, cid_input_path, vid_tags_path)
 
-    //val idf_source_output_path = output_path + "/tf_idf_source_data"
+
     val vid_idf_path = output_path + "/vid_idf_path/" + date_str
     vid_tf_idf(spark, vid_tags_path, vid_idf_path)
 
