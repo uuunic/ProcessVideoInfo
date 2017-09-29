@@ -67,13 +67,13 @@ object GuidVtags {
     val guid_result_temp = guid_data.join(vid_sv_data, guid_data("vid") === vid_sv_data("vid2"), "inner")
     //  .filter($"vid2".isNotNull && $"vid2" =!= "")
       .select($"guid", $"vid",  $"tags", $"tags_source", $"features_index", sv_weight($"features_data", $"percent") as "features_data")
-      .repartition(REPARTITION_NUM)
+      .repartition(REPARTITION_NUM, $"guid")
 
     guid_result_temp.createOrReplaceTempView("temp_db")
     // guid: String, vids:Seq[String], tags:Seq[String], features: (Seq[Int], Seq[Double])
     val sql_inner = "select guid, collect_list(vid) as vids, flatten_long(collect_set(tags)) as tags,  flatten_string(collect_set(tags_source)) as tags_source,  sv_flatten(collect_list(features_index), collect_list(features_data)) as features from temp_db group by guid "
     val sql_outer = "select guid, vids, tags, tags_source, features._1 as index, features._2 as data from ( " + sql_inner + " )"
-    val guid_result = guid_result_temp.sqlContext.sql(sql_outer)
+    val guid_result = guid_result_temp.sqlContext.sql(sql_outer).repartition(REPARTITION_NUM)
     guid_result.printSchema()
 
 
@@ -107,7 +107,7 @@ object GuidVtags {
           val tag_id = tag_data(tag_data.length - 1).toLong
           val hash_value = hash_tf_idf(tag_id)
 
-          val index = features_index.indexOf(hash_value)
+          val index = if(features_index == null || features_index.isEmpty) -1 else features_index.indexOf(hash_value)
           if (index == -1) {
             //println("tag: " + tag + ", hash_value: " + hash_value + ", index: " + index)
 
@@ -118,8 +118,11 @@ object GuidVtags {
           }
         }
       }
-      (guid, vids,  ret_arr)
-    }).toDF("guid", "vids", "tagid_weight")
+      val arr_normal = ret_arr.map(tp=>{
+        (tp._1, tp._2, Tools.normalize(tp._3))
+      })
+      (guid, vids,  ret_arr, arr_normal)
+    }).toDF("guid", "vids", "tagid_weight", "tagid_weight_normalize")
     println("write to parquet, to path: " + output_path)
     res_with_pair.write.mode("overwrite").parquet(output_path)
     println("--------[get guid tags done]--------")
@@ -172,7 +175,8 @@ object GuidVtags {
         }
       }
 
-      val guid_data_daily = spark.read.parquet(guid_path_kv._2)
+      // daily的数据为 "guid", "vids", "tagid_weight", "tagid_weight_normalize"  删掉最后一个
+      val guid_data_daily = spark.read.parquet(guid_path_kv._2).select("guid", "vids", "tagid_weight")
         .map(line=>{
           val guid = line.getString(0)
           val vids = line.getSeq[String](1)
@@ -197,7 +201,7 @@ object GuidVtags {
   }
 
 
-  def put_guid_tag_to_redis(spark: SparkSession, path : String): Unit = {
+  def put_guid_tag_to_redis(spark: SparkSession, path : String, flag: ArrayBuffer[String]): Unit = {
     println("put guid_tag to redis")
     import spark.implicits._
     val ip = "100.107.17.215"   //sz1159.show_video_hb_online.redis.com
@@ -211,7 +215,7 @@ object GuidVtags {
       .map(line=>{
       val guid = line.getString(0)
       val value_weight = line.getAs[Seq[Row]](2)
-        .map(v=>(v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(100).distinct  //_1 tag _2 tag_id _3 weight
+        .map(v=>(v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct  //_1 tag _2 tag_id _3 weight
       KeyValueWeight(guid, value_weight)
     })
 
@@ -221,8 +225,15 @@ object GuidVtags {
     //data.filter(d => Tools.boss_guid.contains(d.key)).show()
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-    println("put to redis done, number: " + data.count)
+    if(flag.contains("delete")) {
+      Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      println("redis delete done, number: " + data.count)
+    }
+
+    if(flag.contains("put")) {
+      Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      println("put to redis done, number: " + data.count)
+    }
 
   }
 
@@ -246,15 +257,34 @@ object GuidVtags {
     val output_path_daily_total = args(2)
     val date = args(3)
     val monthly_output_path = args(4)  // GuidVtagsMonthly
+
+    val control_flag = args(5).split("""###""", -1).toSet
     println("------------------[begin]-----------------")
+    println("control flags is: " + control_flag.mkString("""||"""))
 
+    if(control_flag.contains("daily")) {
+      println("we will get guid vid data [daily]")
+      guid_vid_sv_join_daily(spark, guid_input_path, vid_sv_input_path, output_path = output_path_daily_total + "/" + date)
+    }
 
- //   guid_vid_sv_join_daily(spark, guid_input_path, vid_sv_input_path, output_path = output_path_daily_total + "/" + date)
+    if(control_flag.contains("monthly")) {
+      println("we will get guid vid data [monthly]")
+      get_guid_vtags_monthly(spark, guid_vtags_path = output_path_daily_total, output_path = monthly_output_path)
+    }
 
+    var flag: ArrayBuffer[String] = new ArrayBuffer[String]()
+    if(control_flag.contains("delete")) {
+      flag.append( "delete")
+    }
+    if(control_flag.contains("put")) {
+      flag.append("put")
+    }
 
- //   get_guid_vtags_monthly(spark, guid_vtags_path = output_path_daily_total, output_path = monthly_output_path)
-    put_guid_tag_to_redis(spark, path = monthly_output_path)
-
+    if(flag.nonEmpty) {
+      put_guid_tag_to_redis(spark, path = monthly_output_path, flag = flag)
+    } else {
+      println("there's no control flags of redis put/delete, skip.")
+    }
     println("------------------[done]-----------------")
   }
 

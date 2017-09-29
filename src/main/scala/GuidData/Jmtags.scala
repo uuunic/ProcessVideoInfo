@@ -295,7 +295,7 @@ object Jmtags {
     val tag_type: Int = 2513
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(1)))
+      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), v.getDouble(1)))
       KeyValueWeight(guid, value_weight)
     })
     //  .filter(d => Tools.boss_guid.contains(d.key))
@@ -319,7 +319,7 @@ object Jmtags {
     val tag_type: Int = 2512
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(100).map(v=>(v.getString(0), v.getDouble(1)))
+      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), v.getDouble(1)))
       KeyValueWeight(guid, value_weight)
     })
     //  .filter(d => Tools.boss_guid.contains(d.key))
@@ -381,7 +381,7 @@ object Jmtags {
       output_path = cid_output_monthly
     )
 **/
- //      put_guid_vid_to_redis(spark, path = vid_output_monthly)
+       put_guid_vid_to_redis(spark, path = vid_output_monthly)
     put_guid_cid_to_redis(spark, path = cid_output_monthly)
 
     println("------------------[done]-----------------")
