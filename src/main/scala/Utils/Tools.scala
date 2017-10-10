@@ -54,6 +54,7 @@ object Tools {
     "d68e02a30b6a1035a4d780fbd42c850a",
     "8b00615f9bc11034a4d780fbd42c850a").toSet
 
+
   def get_n_day(N: Int, format: String = "yyyyMMdd"): String= {
     var dateFormat: SimpleDateFormat = new SimpleDateFormat(format)
     var cal: Calendar = Calendar.getInstance()
@@ -62,7 +63,7 @@ object Tools {
   }
   def get_last_month_date_str(format: String= "yyyyMMdd") : Array[String] = {
     val ret = new ArrayBuffer[String]
-    for(i <- 1 to 30) {
+    for(i <- 1 to 10) {
       ret += get_n_day(0 - i)
     }
     ret.toArray
@@ -134,6 +135,11 @@ object Tools {
       }
       return null
     }
+  }
+
+  def normalize(x: Double): Double = {
+    // 2/(1+exp(-2.3 *x)) -1
+    2 / (1 + Math.exp(-2.3 * x)) - 1
   }
 
   case class KeyValueWeight(key: String, value_weight: Seq[(String, Double)])

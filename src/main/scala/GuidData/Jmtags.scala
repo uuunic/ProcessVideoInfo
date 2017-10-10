@@ -4,6 +4,8 @@ import Utils.Tools.KeyValueWeight
 import Utils.{TestRedisPool, Tools}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
+import scala.collection.mutable.ArrayBuffer
+
 /**
   * Created by baronfeng on 2017/9/18.
   */
@@ -90,8 +92,8 @@ object Jmtags {
     println("begin to process guid_vid_cid_data_daily, source path: ")
     println("cid_vid_path: " + cid_vid_path)
     println("guid_path_daily: " + guid_path_daily)
-    println("vid_result_path" + vid_result_path)
-    println("cid_result_path" + cid_result_path)
+    println("vid_result_path:" + vid_result_path)
+    println("cid_result_path:" + cid_result_path)
 
     spark.sqlContext.udf.register("vid_data", (vid: String, vid_weight: Double) => {
       (vid, vid_weight)
@@ -138,17 +140,28 @@ object Jmtags {
     guid_vid_cid_data.createOrReplaceTempView("guid_vid_cid_db")
     val vid_core_sql_str = "select guid, vid, vid_weight from guid_vid_cid_db DISTRIBUTE BY guid, vid SORT BY guid, vid"
     val guid_vid_data = spark.sql("select guid, vid_data_sort(collect_list(vid_data(vid, vid_weight))) as vid_info from ( " + vid_core_sql_str + " ) group by guid")
+      .map(line=>{
+        val guid = line.getString(0)
+        val vid_tuple2 = line.getAs[Seq[Row]](1).map(line => {
+          (line.getString(0), line.getDouble(1))
+        }).sortBy(_._2)(Ordering[Double].reverse).take(100)
+
+        (guid, vid_tuple2, vid_tuple2.map(tp=>{(tp._1, Tools.normalize(tp._2))}))
+      }).toDF("guid", "vid_weight", "vid_weight_normalize")
+
 
     val cid_core_sql_str = "select guid, cid, vid_weight from guid_vid_cid_db DISTRIBUTE BY guid, cid SORT BY guid, cid"
     val cid_sql_inner_str = "select guid, cid, sum(vid_weight) as cid_weight from ( " + cid_core_sql_str +" )guid_vid_cid_db group by guid, cid "
     val cid_sql_outer_str = "select guid, collect_list(cid_tuple2(cid, cid_weight)) as cid_data from ( " + cid_sql_inner_str + " ) t group by guid"
-    val guid_cid_data = spark.sql(cid_sql_outer_str).map(line=>{
+    val guid_cid_data = spark.sql(cid_sql_outer_str)
+      .map(line=>{
       val guid = line.getString(0)
       val cid_tuple2 = line.getAs[Seq[Row]](1).map(line => {
         (line.getString(0), line.getDouble(1))
-      }).sortBy(_._2)(Ordering[Double].reverse).take(200)
-      (guid, cid_tuple2)
-    }).toDF
+      }).sortBy(_._2)(Ordering[Double].reverse).take(100)
+
+      (guid, cid_tuple2, cid_tuple2.map(tp=>{(tp._1, Tools.normalize(tp._2))}))
+    }).toDF("guid", "cid_weight", "cid_weight_normalize")
 
 
 
@@ -171,7 +184,7 @@ object Jmtags {
         val weight = line._2.map(_._2).sum
         (vid, weight)
       })
-      ret.toSeq.sortBy(_._2)(Ordering[Double].reverse).take(200)
+      ret.toSeq.sortBy(_._2)(Ordering[Double].reverse).take(100)
     })
 
     val cid_subpaths = Tools.get_last_month_date_str()
@@ -201,7 +214,7 @@ object Jmtags {
         }
       }
 
-      val cid_data_daily = spark.read.parquet(cid_path_kv._2)
+      val cid_data_daily = spark.read.parquet(cid_path_kv._2).select("guid", "cid_weight")
         .map(line=>{
           val guid = line.getString(0)
           val cid_weight = line.getSeq[Row](1).map(kv=>(kv.getString(0), kv.getDouble(1) * time_weight_res))
@@ -218,7 +231,7 @@ object Jmtags {
     cid_data_total.createOrReplaceTempView("cid_data_db")
     val cid_data_sql_inner = "select guid, collect_list(cid_weight) as cid_weight from cid_data_db group by guid"
     val cid_data_sql_outer = "select guid, flatten(cid_weight) as cid_weight from ( " + cid_data_sql_inner + " ) t"
-    val cid_data_res = spark.sql(cid_data_sql_outer).coalesce(REPARTITION_NUM)
+    val cid_data_res = spark.sql(cid_data_sql_outer)
     cid_data_res.write.mode("overwrite").parquet(output_path)
 
   }
@@ -234,7 +247,7 @@ object Jmtags {
         val weight = line._2.map(_._2).sum
         (vid, weight)
       })
-      ret.toSeq.sortBy(_._2)(Ordering[Double].reverse).take(200)
+      ret.toSeq.sortBy(_._2)(Ordering[Double].reverse).take(100)
     })
 
     val vid_subpaths = Tools.get_last_month_date_str()
@@ -263,7 +276,7 @@ object Jmtags {
         }
       }
 
-      val vid_data_daily = spark.read.parquet(vid_path_kv._2)
+      val vid_data_daily = spark.read.parquet(vid_path_kv._2).select("guid", "vid_weight")
         .map(line=>{
           val guid = line.getString(0)
           val vid_weight = line.getSeq[Row](1).map(kv=>(kv.getString(0), kv.getDouble(1) * time_weight_res))
@@ -280,12 +293,12 @@ object Jmtags {
     vid_data_total.createOrReplaceTempView("vid_data_db")
     val vid_data_sql_inner = "select guid, collect_list(vid_weight) as vid_weight from vid_data_db group by guid"
     val vid_data_sql_outer = "select guid, flatten(vid_weight) as vid_weight from ( " + vid_data_sql_inner + " ) t"
-    val vid_data_res = spark.sql(vid_data_sql_outer).coalesce(REPARTITION_NUM)
+    val vid_data_res = spark.sql(vid_data_sql_outer)
     vid_data_res.write.mode("overwrite").parquet(output_path)
 
   }
 
-  def put_guid_vid_to_redis(spark: SparkSession, path : String): Unit = {
+  def put_guid_vid_to_redis(spark: SparkSession, path : String, flags: Seq[String]): Unit = {
     import spark.implicits._
     val ip = "100.107.17.215"
     val port = 9039
@@ -295,7 +308,7 @@ object Jmtags {
     val tag_type: Int = 2513
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), v.getDouble(1)))
+      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), Tools.normalize(v.getDouble(1))))
       KeyValueWeight(guid, value_weight)
     })
     //  .filter(d => Tools.boss_guid.contains(d.key))
@@ -304,12 +317,17 @@ object Jmtags {
 
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    if(flags.contains("delete")){
+      Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
+    if(flags.contains("put")){
+      Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
     println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
 
   }
 
-  def put_guid_cid_to_redis(spark: SparkSession, path : String): Unit = {
+  def put_guid_cid_to_redis(spark: SparkSession, path : String, flags: Seq[String]): Unit = {
     import spark.implicits._
     val ip = "100.107.17.215"
     val port = 9039
@@ -319,7 +337,7 @@ object Jmtags {
     val tag_type: Int = 2512
     val data = spark.read.parquet(path).map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), v.getDouble(1)))
+      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), Tools.normalize(v.getDouble(1))))
       KeyValueWeight(guid, value_weight)
     })
     //  .filter(d => Tools.boss_guid.contains(d.key))
@@ -329,7 +347,13 @@ object Jmtags {
 //    data.collect().foreach(println)
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    if(flags.contains("delete")){
+      Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
+
+    if(flags.contains("put")) {
+      Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
     println("-------------[put_guid_cid_to_redis] to redis done, number: " + data.count)
 
   }
@@ -339,7 +363,7 @@ object Jmtags {
 
     val spark = SparkSession
       .builder
-      .appName("guid-jmtags")
+      .appName(this.getClass.getName.split("\\$").last)
       .getOrCreate()
 
 
@@ -352,38 +376,70 @@ object Jmtags {
     val vid_output_monthly = args(6)
     val cid_output_monthly = args(7)
     val date = args(8)
+    val control_flags = args(9).split("""###""", -1).toSet
     println("------------------[begin]-----------------")
+    println("control flags is: " + control_flags.mkString("""||"""))
 
-//    get_cid_vid_list(
-//      spark,
-//      cid_info_path = cid_info_path,
-//      vid_info_path = vid_info_path,
-//      output_path = cid_vid_path + "/" + date)
-//
-//
-//    get_guid_vid_cid_data_daily(
-//      spark,
-//      cid_vid_path = cid_vid_path + "/" + date,
-//      guid_path_daily = play_percent_path + "/" + date,
-//      vid_result_path = vid_output_path + "/" + date,
-//      cid_result_path = cid_output_path + "/" + date
-//    )
-/**
-    get_guid_vid_monthly(
-      spark,
-      guid_vid_path = vid_output_path,
-      output_path = vid_output_monthly
-    )
+    if(control_flags.contains("cid_vid_list")) {
+      get_cid_vid_list(
+        spark,
+        cid_info_path = cid_info_path,
+        vid_info_path = vid_info_path,
+        output_path = cid_vid_path + "/" + date)
+    }
 
-    get_guid_cid_monthly(
-      spark,
-      guid_cid_path = cid_output_path,
-      output_path = cid_output_monthly
-    )
-**/
-       put_guid_vid_to_redis(spark, path = vid_output_monthly)
-    put_guid_cid_to_redis(spark, path = cid_output_monthly)
+    if(control_flags.contains("cid_vid_daily")) {
+      get_guid_vid_cid_data_daily(
+        spark,
+        cid_vid_path = cid_vid_path + "/" + date,
+        guid_path_daily = play_percent_path + "/" + date,
+        vid_result_path = vid_output_path + "/" + date,
+        cid_result_path = cid_output_path + "/" + date
+      )
+    }
 
+    if(control_flags.contains("vid_monthly")) {
+      get_guid_vid_monthly(
+        spark,
+        guid_vid_path = vid_output_path,
+        output_path = vid_output_monthly
+      )
+    }
+
+    if(control_flags.contains("cid_monthly")) {
+      get_guid_cid_monthly(
+        spark,
+        guid_cid_path = cid_output_path,
+        output_path = cid_output_monthly
+      )
+    }
+
+    // 先delete
+    val delete_flags: ArrayBuffer[String] = new ArrayBuffer[String]()
+    if(control_flags.contains("delete_vid") || control_flags.contains("delete_cid")) {
+      delete_flags.append( "delete")
+    }
+    if(delete_flags.nonEmpty) {
+      put_guid_vid_to_redis(spark, path = vid_output_monthly, flags = delete_flags)
+    }
+
+
+    val vid_flags: ArrayBuffer[String] = new ArrayBuffer[String]()
+    if(control_flags.contains("put_vid")) {
+      vid_flags.append("put")
+    }
+    if(vid_flags.nonEmpty) {
+      put_guid_vid_to_redis(spark, path = vid_output_monthly, flags = vid_flags)
+    }
+
+
+    val cid_flags: ArrayBuffer[String] = new ArrayBuffer[String]()
+    if(control_flags.contains("put_cid")) {
+      cid_flags.append("put")
+    }
+    if(cid_flags.nonEmpty) {
+      put_guid_cid_to_redis(spark, path = cid_output_monthly, flags = cid_flags)
+    }
     println("------------------[done]-----------------")
   }
 }

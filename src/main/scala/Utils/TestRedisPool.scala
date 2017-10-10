@@ -6,8 +6,6 @@ import redis.clients.jedis.JedisPoolConfig
   */
 class TestRedisPool {
 
-
-
   private var pool: JedisPool = null
   var ip: String = null
   var port: Int = 0

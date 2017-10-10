@@ -17,14 +17,20 @@ import scala.collection.mutable.ArrayBuffer
   */
 object GuidVtags {
   val REPARTITION_NUM = 400
-  val now = System.currentTimeMillis / 1000
+  private val now = System.currentTimeMillis / 1000
 
 
   val sv_weight: UserDefinedFunction = udf((features_data: Seq[Double], weight: Double)=> {
     features_data.map(data => data * weight)
   })
 
-
+  /**
+    * 获取天级别的guid_vtags数据
+    * @param spark 目前运行的spark_session
+    * @param guid_input_path
+    * @param vid_sv_input_path
+    * @param output_path
+    */
   def guid_vid_sv_join_daily(spark: SparkSession, guid_input_path: String, vid_sv_input_path:String, output_path: String) : Unit = {
     println("begin to get guid_vid_sv.")
     println("guid_input_path: " + guid_input_path)
@@ -54,12 +60,7 @@ object GuidVtags {
     })
 
     // guid, ts, vid, playduration, duration, percent
-    val guid_data = spark.read.parquet(guid_input_path)
-//      .filter(line=>{
-//      val guid = line.getString(0)
-//        Tools.boss_guid.contains(guid)
-//      })
-      .repartition(REPARTITION_NUM)
+    val guid_data = spark.read.parquet(guid_input_path).repartition(REPARTITION_NUM)
     val vid_sv_data = spark.read.parquet(vid_sv_input_path).as[vid_idf_line]
       .select($"vid" as "vid2", $"tags", $"tags_source", $"features_index", $"features_data").repartition(REPARTITION_NUM)
       .cache()
@@ -108,11 +109,9 @@ object GuidVtags {
           val hash_value = hash_tf_idf(tag_id)
 
           val index = if(features_index == null || features_index.isEmpty) -1 else features_index.indexOf(hash_value)
-          if (index == -1) {
-            //println("tag: " + tag + ", hash_value: " + hash_value + ", index: " + index)
 
-          } else {
-
+          // if exists
+          if (index != -1) {
             val weight = features_data(index)
             ret_arr += ((tag_pure, tag_id, weight))
           }
@@ -129,6 +128,15 @@ object GuidVtags {
 
   }
 
+  // 目前monthly去掉vids
+  /**
+    * 产生本月的所有数据，产生的数量由tools中的monthly确定，务必确认一下，目前视数据规模定为10天和30天，之后可能会扩展为90天。
+    * 目前的monthly数据中取出了vids、tag_name，是由于数据规模决定的，没办法更大了，如果更大的话经常运行失败。
+    *
+    * @param spark 目前运行的spark_session
+    * @param guid_vtags_path daily的数据目录，取多少天的，由tools控制
+    * @param output_path 线上数据暂定为GuidVtagsMonthly
+    */
   def get_guid_vtags_monthly(spark: SparkSession, guid_vtags_path: String, output_path: String): Unit = {
     import spark.implicits._
 
@@ -158,7 +166,7 @@ object GuidVtags {
       println("error, we have no vid data here!")
       return
     } else {
-      printf("we have %d days guid vtags data to process.\n", subpaths.length)
+      println(f"we have ${subpaths.length}%d days guid vtags data to process.")
     }
 
     var guid_data_total: DataFrame = null
@@ -168,7 +176,7 @@ object GuidVtags {
 
       val time_weight_res = {
         if (time_weight > 1) {
-          println("warning!!, time_weight upper than 1! value:" + time_weight)
+          println(s"warning!!, time_weight upper than 1! value:$time_weight")
           1
         } else {
           time_weight
@@ -176,30 +184,37 @@ object GuidVtags {
       }
 
       // daily的数据为 "guid", "vids", "tagid_weight", "tagid_weight_normalize"  删掉最后一个
-      val guid_data_daily = spark.read.parquet(guid_path_kv._2).select("guid", "vids", "tagid_weight")
+      val guid_data_daily = spark.read.parquet(guid_path_kv._2).select("guid", "tagid_weight")
         .map(line=>{
           val guid = line.getString(0)
-          val vids = line.getSeq[String](1)
-          val tag_tagid_weight = line.getSeq[Row](2).map(kv=>(kv.getLong(1), kv.getDouble(2) * time_weight_res))
-          (guid, vids, tag_tagid_weight)
-        }).toDF("guid", "vids", "tagid_weight")
+//          val vids = line.getSeq[String](1)
+          val tag_tagid_weight = line.getSeq[Row](1).map(kv=>(kv.getLong(1), kv.getDouble(2) * time_weight_res))
+          (guid, tag_tagid_weight)
+        }).toDF("guid", "tagid_weight")
 
       if(guid_data_total == null) {
         guid_data_total = guid_data_daily
       } else {
-        guid_data_total = guid_data_total.union(guid_data_daily).toDF("guid", "vids", "tagid_weight")
+        guid_data_total = guid_data_total.union(guid_data_daily).toDF("guid", "tagid_weight")
       }
     }
 
-    val guid_data_total_res = guid_data_total.coalesce(REPARTITION_NUM)
+    val guid_data_total_res = guid_data_total
     guid_data_total_res.createOrReplaceTempView("guid_data_db")
-    val vid_data_sql_inner = "select guid, collect_list(vids) as vids, collect_list(tagid_weight) as tagid_weight from guid_data_db group by guid"
-    val vid_data_sql_outer = "select guid, flatten_vids(vids) as vids, flatten_tagid(tagid_weight) as tagid_weight from ( " + vid_data_sql_inner + " ) t"
-    val vid_data_res = spark.sql(vid_data_sql_outer)
+    val vid_data_sql_inner = "select guid, collect_list(tagid_weight) as tagid_weight from guid_data_db group by guid"
+    val vid_data_sql_outer = s"select guid, flatten_tagid(tagid_weight) as tagid_weight from ( $vid_data_sql_inner  ) t"
+    val vid_data_res = spark.sql(vid_data_sql_outer).coalesce(REPARTITION_NUM)
     vid_data_res.write.mode("overwrite").parquet(output_path)
 
   }
 
+  /**
+    * 把数据放到redis中去，有可能是先删再放
+    *
+    * @param path 这个位置的数据必须满足 get_guid_vtags_monthly()中的风格，也就是string || Seq[Long, Double]的风格
+    * @param flag flag中如果有delete就先删除掉redis中的数据；如果有put则将数据放入redis中
+    *
+    */
 
   def put_guid_tag_to_redis(spark: SparkSession, path : String, flag: ArrayBuffer[String]): Unit = {
     println("put guid_tag to redis")
@@ -211,11 +226,13 @@ object GuidVtags {
     val prefix = "G1"
     val tag_type: Int = 2501
     val data = spark.read.parquet(path)
- //     .filter(d => Tools.boss_guid.contains(d.getString(0)))
+
       .map(line=>{
       val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](2)
-        .map(v=>(v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct  //_1 tag _2 tag_id _3 weight
+      val value_weight = line.getAs[Seq[Row]](1)
+        .map(v=>(v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct
+          .map(tp=>(tp._1, Tools.normalize(tp._2)))
+      //_1 tag _2 tag_id _3 weight
       KeyValueWeight(guid, value_weight)
     })
 
@@ -227,12 +244,12 @@ object GuidVtags {
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
     if(flag.contains("delete")) {
       Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-      println("redis delete done, number: " + data.count)
+      println(s"redis delete done, number: ${data.count}")
     }
 
     if(flag.contains("put")) {
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-      println("put to redis done, number: " + data.count)
+      println(s"put to redis done, number: ${data.count}")
     }
 
   }
@@ -248,7 +265,7 @@ object GuidVtags {
 
     val spark = SparkSession
       .builder
-      .appName("GuidVtags")
+      .appName(this.getClass.getName.split("\\$").last)
       .getOrCreate()
 
 
@@ -272,7 +289,7 @@ object GuidVtags {
       get_guid_vtags_monthly(spark, guid_vtags_path = output_path_daily_total, output_path = monthly_output_path)
     }
 
-    var flag: ArrayBuffer[String] = new ArrayBuffer[String]()
+    val flag: ArrayBuffer[String] = new ArrayBuffer[String]()
     if(control_flag.contains("delete")) {
       flag.append( "delete")
     }

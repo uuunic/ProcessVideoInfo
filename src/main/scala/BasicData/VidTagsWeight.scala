@@ -1,19 +1,19 @@
 package BasicData
 
 
-import Utils.{Hash, TestRedisPool, Tools}
 import Utils.Defines._
 import Utils.Hash.hash_tf_idf
 import Utils.Tools.KeyValueWeight
+import Utils.{Hash, TestRedisPool, Tools}
 import breeze.linalg.{SparseVector, norm}
 import com.huaban.analysis.jieba.JiebaSegmenter.SegMode
 import com.huaban.analysis.jieba.{JiebaSegmenter, SegToken}
 import org.apache.spark.ml.feature.{HashingTF, IDF}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.ml.linalg.{SparseVector => SV}
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
 import scala.collection.mutable.ArrayBuffer
-
 /**
   * Created by baronfeng on 2017/9/15.
   */
@@ -43,7 +43,7 @@ object VidTagsWeight {
     //    "sec_recommand" -> LineInfo(76, 1.0, "", false),
     "singer_name" -> LineInfo(67, 1.0, "", is_distinct = false),
     "game_name" -> LineInfo(114, 1.0, "", is_distinct = false),
-    "title" -> LineInfo(49, 0.8, "", is_distinct = false),
+    "title" -> LineInfo(49, 0.8, "", is_distinct = false),   // title目前不用，只用来搞join用。必须有title才会有下一步
     "cid_tags" -> LineInfo(-1, 1.0, "", is_distinct = false)
   )
 
@@ -179,6 +179,19 @@ object VidTagsWeight {
         DsVidLine(vid, 0, tags_id, tags.map(line=>line + "_inner").toArray, 1.0, is_distinct = false)  //标记上内部标签
       })
     })
+      .filter(_.tags.length != 0)
+      .groupBy($"vid", $"duration", $"weight", $"is_distinct")
+      .agg(collect_list($"tags") as "tags", collect_list($"tags_source") as "tags_source")
+      .map(line => {
+        val vid = line.getString(0)
+        //          val duration = line.getInt(1)
+        //          val weight = line.getDouble(2)
+        //          val is_distinct = line.getDouble(3)
+        val tags_id = line.getAs[Seq[Seq[Long]]](4).flatten.distinct
+        val tags_source = line.getAs[Seq[Seq[String]]](5).flatten.distinct
+        DsVidLine(vid, 0, tags_id.toArray, tags_source.toArray, 1.0, is_distinct = false)
+      })
+
 
     cid_data.write.mode("overwrite").parquet(vid_tags_output_path + "/" + cid_tags_word)
 
@@ -260,17 +273,24 @@ object VidTagsWeight {
       vid_total = vid_total.join(vid_data, vid_total("title_vid") === vid_data(tag_name + "_vid"), "left")
     }
 
-    println("put vid_total schema")
+
+    println("put vid_total schema, be careful: title_vid is in schema, but not in process!")
     vid_total.printSchema()
+    println(s"process these ${vid_useful_col.size - 1} tag types:")
+    for (s <- vid_useful_col.filter(_._1 != "title")) {
+      println(s"[${s._1}]")
+    }
     val vid_result = vid_total.map(line => {
       val vid = line.getString(0)
       val duration = line.getInt(1)
       val tags_id = new ArrayBuffer[Long]
       val tags_source = new ArrayBuffer[String]
-      var spv : SparseVector[Double] = new SparseVector[Double](new Array[Int](0), new Array[Double](0), TAG_HASH_LENGTH)
+      var spv: SparseVector[Double] = null
 
       val column_num = vid_idf_useful_strs.length
-      for (i <- 0 until vid_useful_col.size) {
+
+      // title相关的不在，所以下标从1开始
+      for (i <- 1 until vid_useful_col.size) {
 
         //  $"vid", $"duration", $"tags", $"tags_source", $"weight", $"features"
         if (!line.isNullAt(column_num * i) && !line.getAs[String](column_num * i).equals("")) {
@@ -278,14 +298,22 @@ object VidTagsWeight {
           tags_source ++= line.getAs[Seq[String]](column_num * i + 3)
           val weight = line.getAs[Double](column_num * i + 4)
           val sv = line.getAs[SV](column_num * i + 5)
-          spv += new SparseVector[Double](sv.indices, sv.values, sv.size) * weight
-
+          if (spv == null){
+            spv = new SparseVector[Double](sv.indices, sv.values, sv.size) * weight
+          } else {
+            spv += new SparseVector[Double](sv.indices, sv.values, sv.size) * weight
+          }
         }
       }
-      spv  = spv / norm(spv)
-      vid_idf_line(vid, duration, tags_id.distinct.toArray, tags_source.distinct.toArray, spv.index, spv.data)
 
-    }).cache()
+      spv = spv / norm(spv)
+      vid_idf_line(vid, duration, tags_id.distinct.toArray, tags_source.distinct.toArray, spv.index.filter(_ != 0), spv.data.filter(_ != 0.0))
+
+    })
+      .filter(line => {
+        line.tags.nonEmpty && line.tags_source.nonEmpty
+      })
+      .distinct().cache()
     vid_result.printSchema()
     vid_result.show(false)
 
@@ -409,13 +437,10 @@ object VidTagsWeight {
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
     Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     println("put to redis done, number: " + data.count)
-
   }
 
   def put_tag_vid_to_redis(spark: SparkSession, path : String): Unit = {
     val res_path = "temp_data/tag_vid_weight"
-
-
 
     println("put tag_vid to redis")
     import spark.implicits._
@@ -438,24 +463,11 @@ object VidTagsWeight {
   }
 
   def main(args: Array[String]) {
-
-
-    /**
-      * step1. create SparkSession object
-      * 封装了spark sql的执行环境，是spark SQL程序的唯一入口
-      */
-    //System.setProperty("hadoop.home.dir", "C:\\winutils")
-
     val spark = SparkSession
       .builder
-      .appName("spark-vid-tag")
-      //     .master("local")
+      .appName(this.getClass.getName.split("\\$").last)
       .getOrCreate()
 
-
-    //    val vid_idf_path = args(1) + "/temp_file/"
-    //    val cid_info_path = args(0)
-    //    val outputPath = args(1)
 
     val vid_input_path = args(0)
     val cid_input_path = args(1)
@@ -463,9 +475,6 @@ object VidTagsWeight {
     val output_path = args(3)
     val date_str = args(4)
     println("------------------[begin]-----------------")
-
-
-    //val vid_tags = output_path + "/vid_tag_collect"
 
     val vid_tags_path = output_path + "/vid_tags/" + date_str
     vid_tag_shuffle(spark, vid_input_path, cid_input_path, vid_tags_path)
@@ -482,13 +491,6 @@ object VidTagsWeight {
 
     val tag_vid_path = output_path + "/tag_vid/" + date_str
     get_tag_vid_data(spark, clean_output_path, tag_vid_path, vid_length)
-
-
-
-    val guid_path = output_path
-
-
-
 
     println("------------------[done]-----------------")
   }
