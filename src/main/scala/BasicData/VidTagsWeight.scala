@@ -253,7 +253,7 @@ object VidTagsWeight {
         // select 要求至少有一个元素，所以用这种脏一些的方法来处理
         .select(vid_idf_useful_strs(0), vid_idf_useful_strs.drop(1):_*)   //$"vid", $"duration", $"tags", $"tags_source", $"weight", $"features"
         // tag_name + "_vid", tag_name + "_duration", tag_name + "_tags", tag_name + "_tags_source", tag_name + "_weight", tag_name + "_features"
-        .toDF(vid_idf_useful_strs.map(line=>tag_name + "_" + line): _*) // "vid" => "title_vid"
+//        .toDF(vid_idf_useful_strs.map(line=>tag_name + "_" + line): _*) // "vid" => "title_vid"
       // vid tags tag_size tag_raw_features features
       rescaledData.write.mode("overwrite").parquet(idf_output_path + "/" + tag_name)
       println("write idf source data done. type: "+ tag_name)
@@ -308,6 +308,59 @@ object VidTagsWeight {
 
       spv = spv / norm(spv)
       vid_idf_line(vid, duration, tags_id.distinct.toArray, tags_source.distinct.toArray, spv.index.filter(_ != 0), spv.data.filter(_ != 0.0))
+
+    })
+      .filter(line => {
+        line.tags.nonEmpty && line.tags_source.nonEmpty
+      })
+      .distinct().cache()
+    vid_result.printSchema()
+    vid_result.show(false)
+
+
+    println("begin to write vid_tags_total to path: " + join_output_path)
+    vid_result.write.mode("overwrite").parquet(join_output_path)
+    println("--------[join all vid data done.]--------")
+  }
+
+  def feature_weight = udf((features: SV, weight: Double) =>{
+    val values = features.values.map(_ * weight)
+    new SV(features.size, features.indices, values)
+  })
+
+  def tf_idf_join_v2(spark:SparkSession, idf_path:String, join_output_path: String) : Unit = {
+    // 从title开始，依次合并
+    import spark.implicits._
+
+    var vid_total:DataFrame = null
+    for ((tag_name, vid_data) <- vid_useful_col if !tag_name.equals("title")) {
+      //vid duration tags tags_source weight features
+      if(vid_total == null){
+        vid_total = spark.read.parquet(idf_path + "/" + tag_name)
+      } else {
+        val vid_data = spark.read.parquet(idf_path + "/" + tag_name)
+        vid_total = vid_total.union(vid_data)
+      }
+
+    }
+
+
+    println("put vid_total schema, be careful: title_vid is in schema, but not in process!")
+    vid_total.printSchema()
+    println(s"process these ${vid_useful_col.size - 1} tag types:")
+    for (s <- vid_useful_col.filter(_._1 != "title")) {
+      println(s"[${s._1}]")
+    }
+    //$"vid", $"duration", $"tags", $"tags_source", $"weight", $"features"
+    val vid_result = vid_total.groupBy("vid").agg(max($"duration"), collect_set($"tags") as "tags", collect_set($"tags_source") as "tags_source", collect_list(feature_weight($"features", $"weight")) as "features").map(line => {
+      val vid = line.getString(0)
+      val duration = line.getInt(1)
+      val tags_id = line.getSeq[Seq[Long]](2).flatten.distinct.toArray
+      val tags_source = line.getSeq[Seq[String]](3).flatten.distinct.toArray
+      var spv: SparseVector[Double] = line.getSeq[SV](4).map(sv=>new SparseVector[Double](sv.indices, sv.values, sv.size)).reduce(_ + _)
+
+      spv = spv / norm(spv)
+      vid_idf_line(vid, duration, tags_id, tags_source, spv.index.filter(_ != 0), spv.data.filter(_ != 0.0))
 
     })
       .filter(line => {
@@ -484,7 +537,7 @@ object VidTagsWeight {
     vid_tf_idf(spark, vid_tags_path, vid_idf_path)
 
     val idf_join_path = output_path + "/idf_join_path/" + date_str
-    tf_idf_join(spark, vid_idf_path, idf_join_path)
+    tf_idf_join_v2(spark, vid_idf_path, idf_join_path)
 
     val clean_output_path = output_path + "/cleaned_data/" + date_str
     tf_idf_to_tuple(spark, idf_join_path, clean_output_path)

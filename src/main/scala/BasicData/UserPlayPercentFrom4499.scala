@@ -44,7 +44,6 @@ object UserPlayPercentFrom4499 {
     val parquet_4499_res = spark.sqlContext.sql(sql_text_outer)
     println("----------[process 4499 data done, write to: " + res_path + "]----------")
     parquet_4499_res.coalesce(400).write.mode("overwrite").parquet(res_path)
-    //return parquet_4499_res
     res_path
   }
 

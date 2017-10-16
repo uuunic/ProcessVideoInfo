@@ -68,7 +68,7 @@ object VidVidRecommander {
     clean_vid_data.createOrReplaceTempView("temp_db")
 
     val sql_str = "select index, collect_list(vid_weight(vid, weight)) as vid_weight from temp_db group by index"
-    val index_data = spark.sql(sql_str).as[(Int, Seq[(String, Double)])]
+    val index_data = spark.sql(sql_str).as[(Int, Seq[(String, Double)])].repartition(REPARTITION_NUM)
 
       .flatMap(line => {
         val ret_arr = new ArrayBuffer[(Int, String, String, Double)]
@@ -86,13 +86,13 @@ object VidVidRecommander {
           }
         }
         ret_arr
-      }).toDF("index", "vid1", "vid2", "similarity")
+      }).toDF("index", "vid1", "vid2", "similarity").repartition(REPARTITION_NUM, $"vid1")
     index_data.createOrReplaceTempView("index_db")
 
 
     val sql_str2_inner = "select vid1, vid2,  sum(similarity) as sim, collect_set(index) as indice from index_db group by vid1, vid2"
     val sql_str2_outer = "select row_number() over (partition by vid1 sort by sim desc) as no, vid1, vid2, sim, indice from (" + sql_str2_inner + ") t "
-    val sql_str2_outer2 = "select no as number, vid1, vid2, sim, indice from (" + sql_str2_outer + ") where no < 101  partition by vid1 sort by vid1, sim desc"
+    val sql_str2_outer2 = "select no as number, vid1, vid2, sim, indice from (" + sql_str2_outer + ") where no == 1  distribute by vid1 sort by vid1, sim desc"
     val ret_data = spark.sql(sql_str2_outer2)
 
     ret_data.write.mode("overwrite").parquet(output_path)
@@ -102,7 +102,7 @@ object VidVidRecommander {
     output_path
   }
 
-  def put_vid_vid_to_redis(spark: SparkSession, path : String): Unit = {
+  def put_vid_vid_to_redis(spark: SparkSession, path : String, flags: Seq[String]): Unit = {
     import spark.implicits._
     val ip = "100.107.17.216"
     val port = 9020
@@ -123,8 +123,13 @@ object VidVidRecommander {
     data.show()
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-    println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
+    if(flags.contains("delete")) {
+      Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
+    if(flags.contains("put")) {
+      Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
+    println("-----------------[put_vid_vid_to_redis] to redis done, number: " + data.count)
 
   }
 
@@ -135,32 +140,33 @@ object VidVidRecommander {
       * step1. create SparkSession object
       * 封装了spark sql的执行环境，是spark SQL程序的唯一入口
       */
-    //System.setProperty("hadoop.home.dir", "C:\\winutils")
+
 
     val spark = SparkSession
       .builder
-      .appName("vid-vid-recomm")
-      //     .master("local")
+      .appName(this.getClass.getName.split("\\$").last)
+
       .getOrCreate()
 
-    // input_path: baronfeng/output/tag_recom_ver_1
-    // sub_path: vid_idf
-    // output_path: baronfeng/output/tag_recom_ver_1/vid_vid_recomm
-    // filter_vid_path: /user/chenxuexu/vid_filter_v1/valid_vid_0830
+
     val input_path = args(0)
     val filter_path = args(1)
     val output_path = args(2)
     val tag_df_length = args(3).toInt
     val date = args(4)
+    val control_flag = args(5).split("""###""", -1).toSet
     println("------------------[begin]-----------------")
+    println("control flags is: " + control_flag.mkString("""||"""))
     val filter_output_path = output_path + "/vid_filter/" + date
-    vid_filter(spark, video_idf_path = input_path, filter_vid_path = filter_path, filter_output_path)
-
     val vid_recomm_output_path = output_path + "/vid_vid_recomm_v2/" + date
-    vid_vid_recomm_v2(spark, tag_df_length, clean_input_path = filter_output_path, output_path = vid_recomm_output_path)
+    if(control_flag.contains("create")) {
+      vid_filter(spark, video_idf_path = input_path, filter_vid_path = filter_path, filter_output_path)
 
-    val vid_vid_path = output_path + "/vid_vid_recomm"
-   // put_vid_vid_to_redis(spark, vid_vid_path)
+      vid_vid_recomm_v2(spark, tag_df_length, clean_input_path = filter_output_path, output_path = vid_recomm_output_path)
+    }
+
+
+    put_vid_vid_to_redis(spark, path = vid_recomm_output_path, flags = control_flag.toSeq)
 
 
 

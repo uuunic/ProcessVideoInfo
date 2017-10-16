@@ -62,8 +62,12 @@ object Tools {
     dateFormat.format(cal.getTime)
   }
   def get_last_month_date_str(format: String= "yyyyMMdd") : Array[String] = {
+    get_last_days(10)
+  }
+
+  def get_last_days(num: Int = 30, format: String = "yyyyMMdd") : Array[String] = {
     val ret = new ArrayBuffer[String]
-    for(i <- 1 to 10) {
+    for(i <- 1 to num) {
       ret += get_n_day(0 - i)
     }
     ret.toArray
@@ -180,7 +184,7 @@ object Tools {
 
 
         count += 1
-        if(count % 20 == 0) {
+        if(count % 20 == 0) {  // 每写20条同步一次
           ppl.sync()
         }
       })
