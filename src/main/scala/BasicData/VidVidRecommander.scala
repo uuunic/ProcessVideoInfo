@@ -73,7 +73,6 @@ object VidVidRecommander {
       .flatMap(line => {
         val ret_arr = new ArrayBuffer[(Int, String, String, Double)]
 
-
         val index = line._1
         val vid_weight_seq = line._2.sortBy(_._2)(Ordering[Double].reverse).take(tag_df_length)
         for (i <- vid_weight_seq.indices) {
@@ -154,7 +153,7 @@ object VidVidRecommander {
     val output_path = args(2)
     val tag_df_length = args(3).toInt
     val date = args(4)
-    val control_flag = args(5).split("""###""", -1).toSet
+    val control_flag = args(5).split(Defines.FLAGS_SPLIT_STR, -1).toSet
     println("------------------[begin]-----------------")
     println("control flags is: " + control_flag.mkString("""||"""))
     val filter_output_path = output_path + "/vid_filter/" + date

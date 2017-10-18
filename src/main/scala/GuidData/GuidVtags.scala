@@ -2,7 +2,7 @@ package GuidData
 
 import BasicData.VidTagsWeight.vid_idf_line
 import Utils.Defines.TAG_HASH_LENGTH
-import Utils.{Hash, TestRedisPool, Tools}
+import Utils.{Hash, TestRedisPool, Tools, Defines}
 import Utils.Hash.hash_tf_idf
 import Utils.Tools.KeyValueWeight
 import breeze.linalg.SparseVector
@@ -275,7 +275,7 @@ object GuidVtags {
     val date = args(3)
     val monthly_output_path = args(4)  // GuidVtagsMonthly
 
-    val control_flag = args(5).split("""###""", -1).toSet
+    val control_flag = args(5).split(Defines.FLAGS_SPLIT_STR, -1).toSet
     println("------------------[begin]-----------------")
     println("control flags is: " + control_flag.mkString("""||"""))
 

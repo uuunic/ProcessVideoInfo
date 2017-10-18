@@ -1,7 +1,7 @@
 package GuidData
 
 import Utils.Tools.KeyValueWeight
-import Utils.{TestRedisPool, Tools}
+import Utils.{TestRedisPool, Tools, Defines}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
 import scala.collection.mutable.ArrayBuffer
@@ -376,7 +376,7 @@ object Jmtags {
     val vid_output_monthly = args(6)
     val cid_output_monthly = args(7)
     val date = args(8)
-    val control_flags = args(9).split("""###""", -1).toSet
+    val control_flags = args(9).split(Defines.FLAGS_SPLIT_STR, -1).toSet
     println("------------------[begin]-----------------")
     println("control flags is: " + control_flags.mkString("""||"""))
 

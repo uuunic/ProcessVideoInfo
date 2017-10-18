@@ -207,6 +207,7 @@ object VidTagsWeight {
     if (title == null)
       return null
     val title_tags: ArrayBuffer[String] = new ArrayBuffer[String]
+
     val sig_data = segmenter.process(title, SegMode.SEARCH)
       .toArray
       .map(line => line.asInstanceOf[SegToken].word)

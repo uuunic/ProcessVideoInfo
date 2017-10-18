@@ -9,4 +9,6 @@ object Defines {
 
   val TAG_HASH_LENGTH: Int = Math.pow(2, 24).toInt // 目前暂定2^24为feature空间
 
+  val FLAGS_SPLIT_STR = raw"---"
+
 }

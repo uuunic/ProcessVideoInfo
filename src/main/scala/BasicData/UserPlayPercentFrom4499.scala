@@ -29,7 +29,7 @@ object UserPlayPercentFrom4499 {
       return null
     val parquet_4499 = spark.read.parquet(inputPath + "/*")
     parquet_4499.createOrReplaceTempView("parquet_4499")
-    spark.sqlContext.udf.register("get_base64", (s:Array[Byte]) => new String(Base64.decodeBase64(s)))
+    spark.sqlContext.udf.register("get_base64", (s: Array[Byte]) => new String(Base64.decodeBase64(s)))
     val sql_text_inner =
       "select " +
         "guid, " +
@@ -48,8 +48,6 @@ object UserPlayPercentFrom4499 {
   }
 
   def main(args: Array[String]): Unit = {
-
-
     val spark = SparkSession.builder()
       .appName {
         this.getClass.getName.split("\\$").last

@@ -62,7 +62,7 @@ object Tools {
     dateFormat.format(cal.getTime)
   }
   def get_last_month_date_str(format: String= "yyyyMMdd") : Array[String] = {
-    get_last_days(10)
+    get_last_days(20)
   }
 
   def get_last_days(num: Int = 30, format: String = "yyyyMMdd") : Array[String] = {
