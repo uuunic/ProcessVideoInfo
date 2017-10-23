@@ -181,7 +181,7 @@ object Jmtags {
       )
       val ret = data.flatten.groupBy(_._1).map(line=>{
         val vid = line._1
-        val weight = line._2.map(_._2).sum
+        val weight = line._2.map(line=>line._2).sum
         (vid, weight)
       })
       ret.toSeq.sortBy(_._2)(Ordering[Double].reverse).take(100)

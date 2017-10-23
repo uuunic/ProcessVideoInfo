@@ -164,6 +164,7 @@ object Tools {
       //val redis = new Jedis(ip, port, expire_time)
       val redis = broadcast_redis_pool.value.getRedisPool.getResource   // lazy 加载 应该可以用
       val ppl = redis.pipelined() //使用pipeline 更高效的批处理
+
       var count = 0
       iter.foreach(f => {
         val key = bzid + "_" + prefix + "_" + f.key

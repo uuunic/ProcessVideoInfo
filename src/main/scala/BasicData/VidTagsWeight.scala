@@ -546,6 +546,8 @@ object VidTagsWeight {
     val tag_vid_path = output_path + "/tag_vid/" + date_str
     get_tag_vid_data(spark, clean_output_path, tag_vid_path, vid_length)
 
+    put_tag_vid_to_redis(spark, path = "/user/baronfeng/BasicData/VidTagsWeight/tag_vid/20171018")
+
     println("------------------[done]-----------------")
   }
 

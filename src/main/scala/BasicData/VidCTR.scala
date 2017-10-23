@@ -27,7 +27,12 @@ object VidCTR {
     result
   }
 
-  def process(spark: SparkSession, input_path: String, output_path: String, click_max: Int = 100, ztid_filter_set: Set[String]) : Unit = {
+  def process(spark: SparkSession,
+              input_path: String,
+              output_path: String,
+              click_min: Int = 100,
+              exposure_min: Int = 100,
+              ztid_filter_set: Set[String]) : Unit = {
     import spark.implicits._
     println(s"begin to process\n input_path: $input_path, output_path: $output_path")
     val input = spark.sparkContext.textFile(input_path)
@@ -42,7 +47,9 @@ object VidCTR {
     input.createOrReplaceTempView("ctr_data")
     val sql_str = "SELECT vid, ztid, SUM(click) as click, SUM(exposure) as exposure, SUM(click)/SUM(exposure) AS ctr FROM ctr_data GROUP BY vid, ztid"
     val ctr_data = spark.sql(sql_str).repartition(REPARTITION_NUM / 20)
-      .filter($"click">=500).filter($"ctr" <= 1.0)
+      .filter($"click">=click_min || $"exposure" >= exposure_min)
+      .filter($"ctr" <= 1.0).cache()
+    println("ctr data count: " + ctr_data.count())
     ctr_data.write.mode("overwrite").parquet(output_path)
   }
 
@@ -57,12 +64,19 @@ object VidCTR {
     val input_path_root = args(0)
     val output_path_root = args(1)
     val date = args(2)
-    val click_max = args(3).toInt
-    val ztid_filter_set = args(4).split(Defines.FLAGS_SPLIT_STR, -1).toSet
+    val click_min = args(3).toInt
+    val exposure_min = args(4).toInt
+
+    val ztid_filter_set = args(5).split(Defines.FLAGS_SPLIT_STR, -1).toSet
 
     val input_path = input_path_root + "/ds=" + date + "*"
     val output_path = output_path_root + "/" + date
-    process(spark, input_path = input_path, output_path = output_path, click_max = click_max, ztid_filter_set = ztid_filter_set)
+    process(spark,
+      input_path = input_path,
+      output_path = output_path,
+      click_min = click_min,
+      exposure_min = exposure_min,
+      ztid_filter_set = ztid_filter_set)
     println("############################### is Done #########################################")
   }
 }

@@ -8,9 +8,10 @@ import com.huaban.analysis.jieba.JiebaSegmenter
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 
+
 object Test {
 
-  case class KeyValueWeight(key: String, value_weight: Seq[(String, Double)])
+
 
   def put_to_redis(input:Dataset[KeyValueWeight],
                    broadcast_redis_pool: Broadcast[TestRedisPool],
@@ -77,6 +78,17 @@ object Test {
 
   }
 
+  def printToFile(f: java.io.File)(op: java.io.PrintWriter => Unit) {
+    val p = new java.io.PrintWriter(f)
+    try { op(p) } finally { p.close() }
+  }
+
+  import java.io._
+
+
+
+  case class KeyValueWeight(key: String, value_weight: Seq[(String, Double)])
+
   def main(args: Array[String]) {
     System.setProperty("hadoop.home.dir", "C:\\winutils")
     val spark = SparkSession
@@ -118,9 +130,9 @@ object Test {
       "灰太狼穿过异云变成巨人，这下看羊往哪里跑",
       "奇闻趣事：这只鹦鹉快三十岁了，精通各种对话各种口技，成精了")
 
+//    val test_data = spark.read.textFile("F:\\query_10000").collect()
 
     println("------------------[begin]-----------------")
-    import com.huaban.analysis.jieba.JiebaSegmenter.SegMode
     val segment_nshort = new NShortSegment().enableCustomDictionary(false).enablePlaceRecognize(true).enableOrganizationRecognize(true)
     val segment = HanLP.newSegment()
     val segment_crf = new CRFSegment
@@ -238,33 +250,43 @@ object Test {
       "vn" -> "名动词"
 
     )
+    val file = new File("F:\\example.txt")
 
-    for(txt <- test_data) {
-      println(txt)
+
+    printToFile(file){p=>test_data.foreach {txt=> {
+      p.println(txt)
       val data = segment.seg(txt)
-      println("normal: " + data.filter(_.word.length >=2).filter(line=>useful_set.keySet.contains(line.nature.toString)))
+      p.println("normal: " + data.filter(_.word.length >= 2).filter(line => useful_set.keySet.contains(line.nature.toString)).map(_.word).mkString(" "))
 
-      println("CRF:    " + segment_crf.seg(txt).filter(_.word.length >=2).filter(line=>useful_set.keySet.contains(line.nature.toString)))
+      p.println("CRF:    " + segment_crf.seg(txt).filter(_.word.length >= 2).filter(line => useful_set.keySet.contains(line.nature.toString)).map(_.word).mkString(" "))
 
-      println("nshort: " + segment_nshort.seg(txt).filter(_.word.length >=2).filter(line=>useful_set.keySet.contains(line.nature.toString)))
+      //      println("nshort: " + segment_nshort.seg(txt).filter(_.word.length >=2).filter(line=>useful_set.keySet.contains(line.nature.toString)))
 
-      println("jieba:  " + segmenter.process(txt, SegMode.SEARCH).map(line=>line.word).filter(_.length >=2).toArray.mkString(", "))
-      println
+      //      println("jieba:  " + segmenter.process(txt, SegMode.SEARCH).map(line=>line.word).filter(_.length >=2).toArray.mkString(", "))
+
+
+      p.println()
+
+    }
+    }
     }
 
-    for(txt <- test_data) {
-      println(txt)
-      val data = segment.seg(txt)
-      println("normal: " + data.filter(_.word.length >=2).filter(line=>{!useful_set.keySet.contains(line.nature.toString)}))
 
-      println("CRF:    " + segment_crf.seg(txt).filter(_.word.length >=2).filter(line=>{!useful_set.keySet.contains(line.nature.toString)}))
-
-      println("nshort: " + segment_nshort.seg(txt).filter(_.word.length >=2).filter(line=>{!useful_set.keySet.contains(line.nature.toString)}))
-
-      println("jieba:  " + segmenter.process(txt, SegMode.SEARCH).map(line=>line.word).filter(_.length >=2).toArray.mkString(", "))
-      println
-    }
-
+//
+//    printToFile(file){p=>test_data.foreach {txt=> {
+//      p.println(txt)
+//      val data = segment.seg(txt)
+//      p.println("normal_escape: " + data.filter(_.word.length >=2).filter(line=>{!useful_set.keySet.contains(line.nature.toString)}))
+//
+//      p.println("CRF_escape:    " + segment_crf.seg(txt).filter(_.word.length >=2).filter(line=>{!useful_set.keySet.contains(line.nature.toString)}))
+//
+////      println("nshort: " + segment_nshort.seg(txt).filter(_.word.length >=2).filter(line=>{!useful_set.keySet.contains(line.nature.toString)}))
+//
+////      println("jieba:  " + segmenter.process(txt, SegMode.SEARCH).map(line=>line.word).filter(_.length >=2).toArray.mkString(", "))
+//      p.println
+//    }
+//    }
+//    }
 
     println("------------------[done]-----------------")
   }
