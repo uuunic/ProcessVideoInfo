@@ -253,22 +253,23 @@ object Test {
     val file = new File("F:\\example.txt")
 
 
-    printToFile(file){p=>test_data.foreach {txt=> {
-      p.println(txt)
-      val data = segment.seg(txt)
-      p.println("normal: " + data.filter(_.word.length >= 2).filter(line => useful_set.keySet.contains(line.nature.toString)).map(_.word).mkString(" "))
+    printToFile(file) { p =>
+      test_data.foreach { txt => {
+        p.println(txt)
+        val data = segment.seg(txt)
+        p.println("normal: " + data.filter(_.word.length >= 2).filter(line => useful_set.keySet.contains(line.nature.toString)).map(_.word).mkString(" "))
 
-      p.println("CRF:    " + segment_crf.seg(txt).filter(_.word.length >= 2).filter(line => useful_set.keySet.contains(line.nature.toString)).map(_.word).mkString(" "))
+        p.println("CRF:    " + segment_crf.seg(txt).filter(_.word.length >= 2).filter(line => useful_set.keySet.contains(line.nature.toString)).map(_.word).mkString(" "))
 
-      //      println("nshort: " + segment_nshort.seg(txt).filter(_.word.length >=2).filter(line=>useful_set.keySet.contains(line.nature.toString)))
+        //      println("nshort: " + segment_nshort.seg(txt).filter(_.word.length >=2).filter(line=>useful_set.keySet.contains(line.nature.toString)))
 
-      //      println("jieba:  " + segmenter.process(txt, SegMode.SEARCH).map(line=>line.word).filter(_.length >=2).toArray.mkString(", "))
+        //      println("jieba:  " + segmenter.process(txt, SegMode.SEARCH).map(line=>line.word).filter(_.length >=2).toArray.mkString(", "))
 
 
-      p.println()
+        p.println()
 
-    }
-    }
+      }
+      }
     }
 
 

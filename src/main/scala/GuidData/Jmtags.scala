@@ -323,6 +323,10 @@ object Jmtags {
     if(flags.contains("put")){
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     }
+
+
+
+
     println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
 
   }

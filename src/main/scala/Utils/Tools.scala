@@ -104,7 +104,7 @@ object Tools {
           return true
       }
       for(i <- fileStatus if i.isFile){
-        if(i.getPath.getName.contains("_SUCCESS")) {
+        if(i.getPath.getName.contains("_SUCCESS") || i.getPath.getName.contains(".check")) {
           return true
         }
       }
@@ -126,6 +126,7 @@ object Tools {
     for(i <- files if i.isDirectory && is_flag_exist(spark, file_path + "/" + i.getPath.getName)){
       time_sub_path.append(i.getPath.getName)
     }
+
     val max_str = time_sub_path.map(line=> (line, reg_str.findFirstIn(line).getOrElse("0").toInt)).sortWith(_._2>_._2)
     if (max_str.isEmpty || max_str(0)._2 == 0) {
       println("illegal input_path: " + file_path)
@@ -133,6 +134,7 @@ object Tools {
     } else {
       for(str<-max_str) {
         val real_sub_path = file_path + "/" + str._1
+//        println("DEBUG: real sub path: " + real_sub_path)
         if(is_flag_exist(spark, real_sub_path)) {
           return file_path + "/" + max_str(0)._1
         }

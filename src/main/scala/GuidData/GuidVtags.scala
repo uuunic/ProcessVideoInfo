@@ -60,7 +60,9 @@ object GuidVtags {
     })
 
     // guid, ts, vid, playduration, duration, percent
-    val guid_data = spark.read.parquet(guid_input_path).repartition(REPARTITION_NUM)
+    val guid_data = spark.read.parquet(guid_input_path).select($"guid", $"ts", $"vid", $"playduration", $"duration", $"percent")
+      .repartition(REPARTITION_NUM)
+
     val vid_sv_data = spark.read.parquet(vid_sv_input_path).as[vid_idf_line]
       .select($"vid" as "vid2", $"tags", $"tags_source", $"features_index", $"features_data").repartition(REPARTITION_NUM)
       .cache()

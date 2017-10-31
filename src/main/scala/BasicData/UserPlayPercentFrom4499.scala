@@ -34,7 +34,7 @@ object UserPlayPercentFrom4499 {
       "select " +
         "guid, " +
         "cast(ts as long) as ts, " +
-        "vid, " +
+        "vid, cid, " +
         "kv.playduration as playduration, " +
         "duration " +
         " from parquet_4499 lateral view json_tuple(get_base64(`data`), \"playduration\") kv " +

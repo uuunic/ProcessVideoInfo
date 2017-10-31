@@ -431,6 +431,9 @@ object VidTagsWeight {
   }
 
   // output_path + "/tf_idf_wash_path"
+  /**
+    * tag-vid倒排数据，依赖数据源是vid-tag数据
+  * */
   def get_tag_vid_data(spark: SparkSession, clean_vid_tag_path : String, tag_vid_output_path: String, vid_length: Int): Unit = {
     import spark.implicits._
     spark.sqlContext.udf.register("tuple_vid_weight", (vid: String, weight: Double)=> {  //(String, Long, Double)

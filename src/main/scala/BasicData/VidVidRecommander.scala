@@ -91,7 +91,7 @@ object VidVidRecommander {
 
     val sql_str2_inner = "select vid1, vid2,  sum(similarity) as sim, collect_set(index) as indice from index_db group by vid1, vid2"
     val sql_str2_outer = "select row_number() over (partition by vid1 sort by sim desc) as no, vid1, vid2, sim, indice from (" + sql_str2_inner + ") t "
-    val sql_str2_outer2 = "select no as number, vid1, vid2, sim, indice from (" + sql_str2_outer + ") where no == 1  distribute by vid1 sort by vid1, sim desc"
+    val sql_str2_outer2 = "select no as number, vid1, vid2, sim, indice from (" + sql_str2_outer + ") where no <= 20  distribute by vid1 sort by vid1, sim desc"
     val ret_data = spark.sql(sql_str2_outer2)
 
     ret_data.write.mode("overwrite").parquet(output_path)
