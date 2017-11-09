@@ -228,16 +228,14 @@ object GuidVtags {
     val prefix = "G1"
     val tag_type: Int = 2501
     val data = spark.read.parquet(path)
-
-      .map(line=>{
-      val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1)
-        .map(v=>(v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct
-          .map(tp=>(tp._1, Tools.normalize(tp._2)))
-      //_1 tag _2 tag_id _3 weight
-      KeyValueWeight(guid, value_weight)
-    })
-
+      .map(line => {
+        val guid = line.getString(0)
+        val value_weight = line.getAs[Seq[Row]](1)
+          .map(v => (v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct
+          .map(tp => (tp._1, Tools.normalize(tp._2)))
+        //_1 tag _2 tag_id _3 weight
+        KeyValueWeight(guid, value_weight)
+      })
       .cache
     //data.collect().foreach(line=>println(line.key))
     //println("\n\n\n\n")
@@ -253,7 +251,7 @@ object GuidVtags {
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
       println(s"put to redis done, number: ${data.count}")
     }
-
+    Tools.stat(spark, data, "U1") // 统计数据
   }
 
   def main(args: Array[String]) {

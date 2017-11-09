@@ -10,9 +10,6 @@ import org.apache.spark.sql.{Dataset, Row, SparkSession}
 
 
 object Test {
-
-
-
   def put_to_redis(input:Dataset[KeyValueWeight],
                    broadcast_redis_pool: Broadcast[TestRedisPool],
                    bzid:String,
@@ -26,29 +23,28 @@ object Test {
     //要写入redis的数据，RDD[Map[String,String]]
     output.repartition(20).foreachPartition { iter =>
       //val redis = new Jedis(ip, port, expire_time)
-      val redis = broadcast_redis_pool.value.getRedisPool.getResource   // lazy 加载 应该可以用
-    val ppl = redis.pipelined() //使用pipeline 更高效的批处理
-    var count = 0
+      val redis = broadcast_redis_pool.value.getRedisPool.getResource // lazy 加载 应该可以用
+      val ppl = redis.pipelined() // 使用pipeline 更高效的批处理
+      var count = 0
       iter.foreach(f => {
         val key = bzid + "_" + prefix + "_" + f.key
-        val values_data = f.value_weight.sortWith(_._2>_._2).map(line=>{
-          line._1 + ":" + tag_type.toString + ":" + line._2.formatted(weight_format)
-
-        })
+        val values_data = f.value_weight
+          .sortWith(_._2 > _._2)
+          .map(line => {
+            line._1 + ":" + tag_type.toString + ":" + line._2.formatted(weight_format)
+          })
         val keys = Array(key)
         ppl.del(keys: _*)
         ppl.rpush(key, values_data: _*)
-        ppl.expire(key, 60*60*24*2)   // 这里设置expire_time
-
+        ppl.expire(key, 60 * 60 * 24 * 2) // 这里设置expire_time
 
         count += 1
-        if(count % 30 == 0) {
+        if (count % 30 == 0) {
           ppl.sync()
         }
       })
       ppl.sync()
       redis.close()
-
     }
   }
 
@@ -88,6 +84,20 @@ object Test {
 
 
   case class KeyValueWeight(key: String, value_weight: Seq[(String, Double)])
+
+  def createFile(dst: String, contents: String): Unit = {
+    import org.apache.hadoop.conf.Configuration
+    import org.apache.hadoop.fs.Path
+    val conf = new Configuration
+    val dstPath = new Path(dst)
+    val fs = dstPath.getFileSystem(conf)
+    val outputStream = fs.create(dstPath)
+    outputStream.writeUTF(contents)
+    outputStream.close()
+    System.out.println("create file " + dst + " success!")
+    //fs.close();
+  }
+
 
   def main(args: Array[String]) {
     System.setProperty("hadoop.home.dir", "C:\\winutils")

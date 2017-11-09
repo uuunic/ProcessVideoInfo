@@ -323,10 +323,7 @@ object Jmtags {
     if(flags.contains("put")){
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     }
-
-
-
-
+    Tools.stat(spark, data, "U3") // 统计数据
     println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
 
   }
@@ -358,6 +355,7 @@ object Jmtags {
     if(flags.contains("put")) {
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     }
+    Tools.stat(spark, data, "U2") // 统计数据
     println("-------------[put_guid_cid_to_redis] to redis done, number: " + data.count)
 
   }

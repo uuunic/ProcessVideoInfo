@@ -1,9 +1,12 @@
 package Utils
 
+import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.Calendar
 
+import org.apache.hadoop.fs.{FSDataInputStream, Path}
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.{Dataset, SparkSession}
 
 import scala.collection.mutable.ArrayBuffer
@@ -62,7 +65,7 @@ object Tools {
     dateFormat.format(cal.getTime)
   }
   def get_last_month_date_str(format: String= "yyyyMMdd") : Array[String] = {
-    get_last_days(20)
+    get_last_days(30)
   }
 
   def get_last_days(num: Int = 30, format: String = "yyyyMMdd") : Array[String] = {
@@ -87,8 +90,46 @@ object Tools {
     fs.exists(new org.apache.hadoop.fs.Path(file_path))
   }
 
+  def file_append(spark: SparkSession, path: String, output_str: String): Unit = {
+    val conf = spark.sparkContext.hadoopConfiguration
+    val fs = org.apache.hadoop.fs.FileSystem.get(conf)
+    val p = new Path(path)
+    val fsout = if(!fs.exists(p)){
+      fs.create(p)
+    } else {
+      fs.append(p)
+    }
+
+    val writer = new PrintWriter(fsout)
+    writer.append(output_str)
+    writer.close()
+  }
+
+  def stat(spark: SparkSession, data: Dataset[KeyValueWeight], name: String, output: String = "/tmp/short_video_data/baronfeng.txt"): Unit = {
+    import spark.implicits._
+    val LOOPS: Int = 10
+    val key_count = data.count()
+    val value_count = data.map(line=>line.value_weight.length).toDF("length").cache
+    val value_count_total = value_count.agg(sum($"length")).collect().head.getLong(0)
+    val average_length: Double = value_count_total.toDouble / key_count.toDouble
+    val interval = average_length / 5
+    val stat_counts: ArrayBuffer[Long] = new ArrayBuffer
+    for(i <- 0 until LOOPS - 1) {
+      stat_counts += value_count.filter($"length" >= i * interval && $"length" < (i+1) * interval).count()
+    }
+    stat_counts += value_count.filter($"length" >= (LOOPS - 1) * interval).count()
+
+    val stat_str: String = {
+      val date = get_n_day(0) // today
+      s"$date\t$name\t$key_count\t${average_length.formatted("%.3f")}\t${interval.formatted("%.3f")}\t${stat_counts.mkString(",")}\n"
+    }
+    println(s"write $name stat data to [$output]")
+    file_append(spark, output, stat_str)
+  }
+
   /**
-    * 判断文件夹存在，而且文件夹不为空，必须得有_SUCCESS存在才可以
+    * 判断文件夹存在，而且文件夹不为空，必须得有_SUCCESS或者check文件存在才可以
+    * 如果check文件存在，还需要判断一下check文件中的文件数量是不是和文件夹下的文件相同（并没有逐个判断文件名是否对应）
     * */
   def is_flag_exist(spark: SparkSession, file_path: String) : Boolean = {
     val conf = spark.sparkContext.hadoopConfiguration
@@ -96,19 +137,32 @@ object Tools {
     val fpath = new org.apache.hadoop.fs.Path(file_path)
     val exists = fs.exists(fpath)
     if(!exists)
-      return false
+      false
     else {
       val fileStatus = fs.listStatus(fpath)
+
       for(i <- fileStatus if i.isDirectory) {
         if(is_flag_exist(spark, file_path + "/" + i.getPath.getName))
           return true
       }
-      for(i <- fileStatus if i.isFile){
-        if(i.getPath.getName.contains("_SUCCESS") || i.getPath.getName.contains(".check")) {
-          return true
+      var exists = false
+      for(i <- fileStatus.filter(_.isFile) if !exists){
+        if(i.getPath.getName.contains("_SUCCESS")) {
+          exists = true
+        } else if (i.getPath.getName.contains(".check")) {
+          // Read offsetRanges from file.
+          val p = new Path(file_path + "/" + i.getPath.getName)
+          val objInputStream = new FSDataInputStream(fs.open(p))
+          val check_file_nums = objInputStream.readLine().toLong
+
+          objInputStream.close()
+          if(check_file_nums == fileStatus.length - 1) {
+
+            exists = true
+          }
         }
       }
-      false
+      exists
     }
   }
 
@@ -123,23 +177,30 @@ object Tools {
     val fpath = new org.apache.hadoop.fs.Path(file_path)
     val files = fs.listStatus(fpath)
     val time_sub_path = new ArrayBuffer[String]
-    for(i <- files if i.isDirectory && is_flag_exist(spark, file_path + "/" + i.getPath.getName)){
+    for(i <- files if i.isDirectory){
       time_sub_path.append(i.getPath.getName)
     }
 
-    val max_str = time_sub_path.map(line=> (line, reg_str.findFirstIn(line).getOrElse("0").toInt)).sortWith(_._2>_._2)
+    val max_str = time_sub_path.map(line=> (line, reg_str.findFirstIn(line).getOrElse("0").toInt))
+      .sortWith(_._2>_._2).take(5)
+      .filter(i=>{
+        is_flag_exist(spark, file_path + "/" + i._1)
+      })
     if (max_str.isEmpty || max_str(0)._2 == 0) {
       println("illegal input_path: " + file_path)
-      return null
+      null
     } else {
-      for(str<-max_str) {
+      var ret_path: String = null
+      for(str<-max_str if ret_path == null) {
         val real_sub_path = file_path + "/" + str._1
 //        println("DEBUG: real sub path: " + real_sub_path)
         if(is_flag_exist(spark, real_sub_path)) {
-          return file_path + "/" + max_str(0)._1
+          ret_path =  file_path + "/" + max_str(0)._1
+          println("the path exists: " + ret_path)
+
         }
       }
-      return null
+      ret_path
     }
   }
 
