@@ -4,15 +4,20 @@ package BasicData
 import Utils.Defines._
 import Utils.Hash.hash_tf_idf
 import Utils.Tools.KeyValueWeight
-import Utils.{Hash, TestRedisPool, Tools}
+import Utils._
 import breeze.linalg.{SparseVector, norm}
+import com.hankcs.hanlp.HanLP.Config
+import com.hankcs.hanlp.dictionary.CustomDictionary
+import com.hankcs.hanlp.seg.CRF.CRFSegment
 import com.huaban.analysis.jieba.JiebaSegmenter.SegMode
 import com.huaban.analysis.jieba.{JiebaSegmenter, SegToken}
 import org.apache.spark.ml.feature.{HashingTF, IDF}
 import org.apache.spark.ml.linalg.{SparseVector => SV}
+import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
+import scala.collection.JavaConversions._
 import scala.collection.mutable.ArrayBuffer
 /**
   * Created by baronfeng on 2017/9/15.
@@ -263,68 +268,7 @@ object VidTagsWeight {
 
   }
 
-  def tf_idf_join(spark:SparkSession, idf_path:String, join_output_path: String) : Unit = {
-    // 从title开始，依次合并
-    import spark.implicits._
-
-    var vid_total:DataFrame = spark.read.parquet(idf_path + "/title")
-    for ((tag_name, vid_data) <- vid_useful_col if !tag_name.equals("title")) {
-      //vid duration tags tags_source weight features
-      val vid_data = spark.read.parquet(idf_path + "/" + tag_name)
-      vid_total = vid_total.join(vid_data, vid_total("title_vid") === vid_data(tag_name + "_vid"), "left")
-    }
-
-
-    println("put vid_total schema, be careful: title_vid is in schema, but not in process!")
-    vid_total.printSchema()
-    println(s"process these ${vid_useful_col.size - 1} tag types:")
-    for (s <- vid_useful_col.filter(_._1 != "title")) {
-      println(s"[${s._1}]")
-    }
-    val vid_result = vid_total.map(line => {
-      val vid = line.getString(0)
-      val duration = line.getInt(1)
-      val tags_id = new ArrayBuffer[Long]
-      val tags_source = new ArrayBuffer[String]
-      var spv: SparseVector[Double] = null
-
-      val column_num = vid_idf_useful_strs.length
-
-      // title相关的不在，所以下标从1开始
-      for (i <- 1 until vid_useful_col.size) {
-
-        //  $"vid", $"duration", $"tags", $"tags_source", $"weight", $"features"
-        if (!line.isNullAt(column_num * i) && !line.getAs[String](column_num * i).equals("")) {
-          tags_id ++= line.getAs[Seq[Long]](column_num * i + 2)
-          tags_source ++= line.getAs[Seq[String]](column_num * i + 3)
-          val weight = line.getAs[Double](column_num * i + 4)
-          val sv = line.getAs[SV](column_num * i + 5)
-          if (spv == null){
-            spv = new SparseVector[Double](sv.indices, sv.values, sv.size) * weight
-          } else {
-            spv += new SparseVector[Double](sv.indices, sv.values, sv.size) * weight
-          }
-        }
-      }
-
-      spv = spv / norm(spv)
-      vid_idf_line(vid, duration, tags_id.distinct.toArray, tags_source.distinct.toArray, spv.index.filter(_ != 0), spv.data.filter(_ != 0.0))
-
-    })
-      .filter(line => {
-        line.tags.nonEmpty && line.tags_source.nonEmpty
-      })
-      .distinct().cache()
-    vid_result.printSchema()
-    vid_result.show(false)
-
-
-    println("begin to write vid_tags_total to path: " + join_output_path)
-    vid_result.write.mode("overwrite").parquet(join_output_path)
-    println("--------[join all vid data done.]--------")
-  }
-
-  def feature_weight = udf((features: SV, weight: Double) =>{
+  def feature_weight: UserDefinedFunction = udf((features: SV, weight: Double) =>{
     val values = features.values.map(_ * weight)
     new SV(features.size, features.indices, values)
   })
@@ -420,7 +364,7 @@ object VidTagsWeight {
     (vid, duration, ret_arr.toSeq)
   }
 
-
+  /**将join_data 转换为clean_data*/
   def tf_idf_to_tuple(spark: SparkSession, join_path: String, clean_output_path: String) : Unit = {
     import spark.implicits._
     val ret_path = clean_output_path
@@ -432,7 +376,7 @@ object VidTagsWeight {
 
   // output_path + "/tf_idf_wash_path"
   /**
-    * tag-vid倒排数据，依赖数据源是vid-tag数据
+    * tag-vid倒排数据，依赖数据源是vid-tag clean_data数据
   * */
   def get_tag_vid_data(spark: SparkSession, clean_vid_tag_path : String, tag_vid_output_path: String, vid_length: Int): Unit = {
     import spark.implicits._
@@ -472,6 +416,189 @@ object VidTagsWeight {
 
   }
 
+  def collect_cid_title_as_tags(spark: SparkSession, cid_path: String): Set[String] = {
+    println("--------------get divide words--------------")
+    import spark.implicits._
+    val cid_data = spark.read.textFile(cid_path).map(_.split("\t", -1))
+      .filter(_.length >= 136)
+      .filter(_(61) == "4")
+      .map(line=>{
+        (line(1), line(3), line(19), line(20),line(53), line(54))
+      })
+      .toDF("cid", "map_name", "type", "type_name", "title", "als")
+      .select($"title").as[String]
+      .map(line=>{
+        var s = line
+        for(r <- Defines.pattern_list) {
+          s = r.replaceAllIn(s, "")
+        }
+        s
+      })
+      .distinct().cache
+    println("print cid_titles after regex")
+    cid_data.show(false)
+    println("--------------get divide words done--------------")
+    cid_data.collect().toSet
+
+  }
+
+/**
+  * @param tags_path tag的位置，“1”是在线的tag数量，印象中是40w量级
+  * @param cid_info_path  得到cid 的名字，这样断cid的时候优先级可以更高一些
+  * */
+  def collect_tags(spark: SparkSession, tags_path: String, cid_info_path: String) : Set[String] = {
+    val real_tags_path = Tools.get_latest_subpath(spark, tags_path)
+    println(s"--------------begin to get poineer tags from $real_tags_path--------------")
+    val tags = spark.sparkContext.textFile(real_tags_path)
+      .map(_.split("\t", -1)).filter(_.length==14).filter(_(6)=="1")
+      .map(_(2)).distinct().collect().toSet
+    println(s"--------------get poineer tags number: ${tags.size}--------------")
+    println(s"--------------begin to get cid titles as tags--------------")
+    val clean_cid_titles = collect_cid_title_as_tags(spark, cid_path = cid_info_path)
+    println(s"--------------cid title number: ${clean_cid_titles.size}--------------")
+    (tags ++ clean_cid_titles).map(_.trim.toLowerCase).filter(_.length > 1)
+  }
+  def tuple2: UserDefinedFunction = udf((s1: String, s2: Long) => (s1, s2))
+
+  def get_vid_qtag(spark: SparkSession,
+                   source_4141_path: String,
+                   cid_info_path: String,
+                   tags_info_path: String,
+                   vid_filter_path: String,
+                   stop_words_path: String,
+                   vid_qtag_output_path: String,
+                   qtag_vid_output_path: String): Unit = {
+    import spark.implicits._
+    println(s"--------[get vid_qtag_daily from path: $source_4141_path]--------")
+    // 取30天的数据，chenxue的数据里有 /time= YYYYMMDD 这个格式
+    val last_month_days_path = Tools.get_last_month_date_str()
+                        .map(date=>(date, source_4141_path + "/time=" + date))
+    if(last_month_days_path.length == 0) {
+      println("error, we have no vid qtags data here!")
+      return
+    }
+
+    println(s"we have ${last_month_days_path.length} days qtag data to process.")
+
+
+    val cid_info = spark.read.textFile(cid_info_path).map(_.split("\t", -1))
+      .filter(_.length >= 136)
+      .filter(arr => arr(61) == "4") //_(61)是b_cover_checkup_grade 要未上架的和在线的
+      .filter(line => !line(video_ids_index).equals("")) //84为长视频列表
+      .map(line => {
+      val vids = line(video_ids_index).split("#", -1).map(_.trim).filter(_.nonEmpty)
+      val cid = line(1).trim
+      (cid, vids)
+    }).filter(_._2.nonEmpty)
+      .toDF("cid", "vids")
+
+//hanlp的切分词，从cid_info和tag里来
+
+    val useful_split_tags = collect_tags(spark, tags_info_path, cid_info_path = cid_info_path)
+    val tags_broadcast = spark.sparkContext.broadcast(useful_split_tags)
+    println(s"get_qtag:  get split tags for hanlp from cid_info and tags_info, number: ${useful_split_tags.size}")
+// 选出来的停止词
+    val stop_words = spark.read.text(stop_words_path).map(_.getString(0).trim().toLowerCase).collect().toSet
+    val stop_words_broadcast = spark.sparkContext.broadcast(stop_words)
+    println(s"get_qtag: get omg_stop_words from [$stop_words_path], number: ${stop_words.size}")
+
+    // 内容池， qtag-vids要过滤
+    val vid_filter = spark.read.json(vid_filter_path).cache
+    println(s"get_qtag: get vid_filter from [$vid_filter_path], number: ${vid_filter.count}")
+    vid_filter.show()
+
+    // guid id query 都是String
+    val vid_qtag_data = spark.read.parquet(last_month_days_path.map(_._2): _*)
+                          .select($"guid", $"id", $"query").filter(_.getString(2).length >= 2)
+      .groupBy($"id", $"query").agg(count($"guid") as "count").repartition(REPARTITION_NUM, $"id", $"query")
+      // join 一下cid  防止有cid中的vid没有放进去
+      .join(cid_info, $"id" === cid_info("cid"), "left").select($"id", $"cid", $"vids", $"query", $"count")
+      .flatMap(line =>{
+        val id = line.getString(0)
+        val vids = if(id.length == 11) {
+          Array(id)
+        } else if(!line.isNullAt(1)) {
+          line.getSeq[String](2).toArray
+        } else {
+          Array("")
+        }
+        vids.map(vid=>(vid, line.getString(3), line.getLong(4)))
+      }).filter(_._1 != "")
+      .toDF("vid", "query", "count")
+      .groupBy("vid", "query").agg(sum($"count") as "count").filter($"count" > 20)
+      // 开始拆分
+      .mapPartitions(part => {
+        Config.IOAdapter = new HadoopFileIoAdapter()
+        val stop_words_p = stop_words_broadcast.value
+        for(s <- tags_broadcast.value) {
+          try {
+            CustomDictionary.add(s)
+          } catch {  // 有exception 暂时不捕捉
+            case ex: ArrayIndexOutOfBoundsException => println("this key leads to ArrayIndexOutOfBoundsException: " + s)
+            case ex: NullPointerException => println("this key leads to NullPointerException: " + s)
+          }
+        }
+        //val segment_broadcast = HanLP.newSegment().enableCustomDictionary(true)
+        //暂时选用crf分词
+        val segment_crf = new CRFSegment().enablePartOfSpeechTagging(true).enableCustomDictionary(true)
+        part.flatMap(f = row => {
+          val vid = row.getAs[String]("vid")
+          val query = row.getAs[String]("query").toLowerCase
+          val count = row.getAs[Long]("count")
+          val crf = segment_crf.seg(query)
+            .filter(_.word.length >= 2)
+            .filter(line => useful_set.keySet.contains(line.nature.toString)) //按照词性过滤一遍
+
+            .map(_.word.trim)
+            .filter(w => !stop_words_p.contains(w))  //  按照停止词过滤一遍
+            .map(word => (vid, word, count))
+
+          crf
+        })
+      })
+      .toDF("vid", "query", "count")
+      .groupBy("vid", "query").agg(sum($"count") as "count")
+      .cache
+    vid_qtag_data.show()
+
+
+    val vid_qtags = vid_qtag_data.groupBy($"vid").agg(collect_list(tuple2($"query", $"count")) as "query_count", max($"count") as "max_count")
+      .map(line=>{
+        val vid = line.getString(0)
+        val max_count = line.getLong(2)
+        val query_count = line.getSeq[Row](1)
+          .map(r => (r.getString(0), r.getLong(1)))
+
+          .sortBy(_._2)(Ordering[Long].reverse)
+          .take(100)
+          .map(tp => (tp._1, tp._2.toDouble / max_count))
+          .filter(_._2 > 0.01)  // 限制太小的点击率的就不要了
+        KeyValueWeight(vid, query_count)
+      }).cache
+    vid_qtags.coalesce(REPARTITION_NUM).write.mode("overwrite").parquet(vid_qtag_output_path)
+    println(s"put vid_qtags to path $vid_qtag_output_path, number: ${vid_qtags.count()}")
+
+
+    // qtag-vids要过滤
+    val qtag_vids = vid_qtag_data.join(vid_filter, "vid")
+      .groupBy($"query").agg(collect_list(tuple2($"vid", $"count")) as "vid_count", max($"count") as "max_count")
+      .map(line=>{
+        val query = line.getString(0)
+        val max_count = line.getLong(2)
+        val vid_count = line.getSeq[Row](1)
+          .map(r => (r.getString(0), r.getLong(1)))
+
+          .sortBy(_._2)(Ordering[Long].reverse)
+//          .take(100)
+          .map(tp => (tp._1, tp._2.toDouble / max_count))
+          .filter(_._2 > 0.01)   // 限制太小的点击率的就不要了
+        KeyValueWeight(query, vid_count)
+      }).cache
+    qtag_vids.coalesce(REPARTITION_NUM).write.mode("overwrite").parquet(qtag_vid_output_path)
+    println(s"put qtag_vids to path $qtag_vid_output_path, number: ${qtag_vids.count}")
+
+  }
+
   def put_vid_tag_to_redis(spark: SparkSession, path : String): Unit = {
     println("put vid_tag to redis")
     import spark.implicits._
@@ -492,12 +619,16 @@ object VidTagsWeight {
     //println("\n\n\n\n")
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+    Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     println("put to redis done, number: " + data.count)
   }
 
-  def put_tag_vid_to_redis(spark: SparkSession, path : String): Unit = {
-    val res_path = "temp_data/tag_vid_weight"
+  def put_tag_vid_to_redis(spark: SparkSession, path : String, control_flags:Set[String]): Unit = {
+    val res_path = path
+    if(control_flags.contains("delete") || control_flags.contains("put")) {
+
+    }
 
     println("put tag_vid to redis")
     import spark.implicits._
@@ -514,9 +645,14 @@ object VidTagsWeight {
     //println("\n\n\n\n")
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    if(control_flags.contains("delete")) {
+      Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
+    if(control_flags.contains("put")) {
+      Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+    }
     println("put to redis done, number: " + data.count)
-
+    Tools.stat(spark, data, "T1")
   }
 
   def main(args: Array[String]) {
@@ -528,28 +664,57 @@ object VidTagsWeight {
 
     val vid_input_path = args(0)
     val cid_input_path = args(1)
-    val vid_length = args(2).toInt
-    val output_path = args(3)
-    val date_str = args(4)
+    val vid_filter_path = Tools.get_latest_subpath(spark, args(2))  // 需要找最近的
+    val source_4141_path = args(3)
+    val tags_info_path = args(4)
+    val stop_words_path = args(5)
+    val vid_length = args(6).toInt
+    val output_path = args(7)
+    val date_str = args(8)
+    val control_flags = args(9).split(Defines.FLAGS_SPLIT_STR, -1).toSet
     println("------------------[begin]-----------------")
 
     val vid_tags_path = output_path + "/vid_tags/" + date_str
-    vid_tag_shuffle(spark, vid_input_path, cid_input_path, vid_tags_path)
-
+    if(control_flags.contains("shuffle")) {
+      vid_tag_shuffle(spark, vid_input_path, cid_input_path, vid_tags_path)
+    }
 
     val vid_idf_path = output_path + "/vid_idf_path/" + date_str
-    vid_tf_idf(spark, vid_tags_path, vid_idf_path)
+    if(control_flags.contains("idf")) {
+      vid_tf_idf(spark, vid_tags_path, vid_idf_path)
+    }
 
     val idf_join_path = output_path + "/idf_join_path/" + date_str
-    tf_idf_join_v2(spark, vid_idf_path, idf_join_path)
+    if(control_flags.contains("idf_join")) {
+      tf_idf_join_v2(spark, vid_idf_path, idf_join_path)
+    }
 
     val clean_output_path = output_path + "/cleaned_data/" + date_str
-    tf_idf_to_tuple(spark, idf_join_path, clean_output_path)
+    if(control_flags.contains("cleaned_data")) {
+      tf_idf_to_tuple(spark, idf_join_path, clean_output_path)
+    }
 
     val tag_vid_path = output_path + "/tag_vid/" + date_str
-    get_tag_vid_data(spark, clean_output_path, tag_vid_path, vid_length)
+    if(control_flags.contains("tag_vid")) {
+      get_tag_vid_data(spark, clean_output_path, tag_vid_path, vid_length)
+    }
 
-    put_tag_vid_to_redis(spark, path = "/user/baronfeng/BasicData/VidTagsWeight/tag_vid/20171018")
+    if(control_flags.contains("qtag")) {
+      val vid_qtag_path = output_path + "/vid_qtag/" + date_str
+      val qtag_vid_path = output_path + "/qtag_vid/" + date_str
+      get_vid_qtag(spark,
+        source_4141_path = source_4141_path,
+        cid_info_path = cid_input_path,
+        tags_info_path = tags_info_path,
+        vid_filter_path = vid_filter_path,
+        stop_words_path = stop_words_path,
+        vid_qtag_output_path = vid_qtag_path,
+        qtag_vid_output_path = qtag_vid_path
+      )
+    }
+
+    put_tag_vid_to_redis(spark, path = tag_vid_path, control_flags)
+
 
     println("------------------[done]-----------------")
   }

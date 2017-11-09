@@ -1,9 +1,11 @@
 package BasicData
 
 import TagRecommender.TagRecommend.vid_idf_line
-import Utils.{Defines, TestRedisPool, Tools}
 import Utils.Tools.KeyValueWeight
-import org.apache.spark.sql.SparkSession
+import Utils.{Defines, TestRedisPool, Tools}
+import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.expressions.UserDefinedFunction
+import org.apache.spark.sql.functions._
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -45,7 +47,7 @@ object VidVidRecommander {
     println("--------------[vid filter done.]--------------")
   }
 
-  def vid_vid_recomm_v2(spark: SparkSession, tag_df_length: Int, clean_input_path: String, output_path: String): String = {
+  def vid_vid_recomm_v2(spark: SparkSession, tag_df_length: Int, clean_input_path: String, output_path: String, vid_recomm_num: Int): String = {
     import spark.implicits._
     spark.sqlContext.udf.register("vid_weight", (index: String, weight: Double) => {
       (index, weight)
@@ -90,8 +92,8 @@ object VidVidRecommander {
 
 
     val sql_str2_inner = "select vid1, vid2,  sum(similarity) as sim, collect_set(index) as indice from index_db group by vid1, vid2"
-    val sql_str2_outer = "select row_number() over (partition by vid1 sort by sim desc) as no, vid1, vid2, sim, indice from (" + sql_str2_inner + ") t "
-    val sql_str2_outer2 = "select no as number, vid1, vid2, sim, indice from (" + sql_str2_outer + ") where no <= 20  distribute by vid1 sort by vid1, sim desc"
+    val sql_str2_outer = s"select row_number() over (partition by vid1 sort by sim desc) as no, vid1, vid2, sim, indice from ($sql_str2_inner) t "
+    val sql_str2_outer2 = s"select no as number, vid1, vid2, sim, indice from ($sql_str2_outer) where no <= $vid_recomm_num  distribute by vid1 sort by vid1, sim desc"
     val ret_data = spark.sql(sql_str2_outer2)
 
     ret_data.write.mode("overwrite").parquet(output_path)
@@ -101,20 +103,27 @@ object VidVidRecommander {
     output_path
   }
 
+  val tuple2_udf: UserDefinedFunction = udf((v: String, sim: Double) => {
+    (v, sim)
+  })
+
   def put_vid_vid_to_redis(spark: SparkSession, path : String, flags: Seq[String]): Unit = {
     import spark.implicits._
+
+
     val ip = "100.107.17.216"
     val port = 9020
     //val limit_num = 1000
     val bzid = "sengine"
     val prefix = "v0_sv_nr_vid"
     val tag_type: Int = -1
-    val data = spark.read.parquet(path).filter($"number" === 1).select($"vid1", $"vid2", $"sim").map(line=>{
+    val data = spark.read.parquet(path).groupBy($"vid1").agg(collect_list(tuple2_udf($"vid2", $"sim"))).map(line=>{
       val vid1 = line.getString(0)
-      val vid2 = line.getString(1)
-      val similarity = line.getDouble(2)
-      val value_weight = Array((vid2, similarity))
-      KeyValueWeight(vid1, value_weight)
+      val vid2_sim = line.getSeq[Row](1).map(vid_sim_tp => (vid_sim_tp.getString(0), vid_sim_tp.getDouble(1)))
+        .sortBy(_._2)(Ordering[Double].reverse).toArray
+//      val similarity = line.getDouble(2)
+//      val value_weight = Array((vid2, similarity))
+      KeyValueWeight(vid1, vid2_sim)
     })
       //  .filter(d => Tools.boss_guid.contains(d.key))
       .cache
@@ -128,6 +137,7 @@ object VidVidRecommander {
     if(flags.contains("put")) {
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
     }
+    Tools.stat(spark, data, "V2") // 统计数据
     println("-----------------[put_vid_vid_to_redis] to redis done, number: " + data.count)
 
   }
@@ -153,7 +163,8 @@ object VidVidRecommander {
     val output_path = args(2)
     val tag_df_length = args(3).toInt
     val date = args(4)
-    val control_flag = args(5).split(Defines.FLAGS_SPLIT_STR, -1).toSet
+    val vid_recomm_num = args(5).toInt
+    val control_flag = args(6).split(Defines.FLAGS_SPLIT_STR, -1).toSet
     println("------------------[begin]-----------------")
     println("control flags is: " + control_flag.mkString("""||"""))
     val filter_output_path = output_path + "/vid_filter/" + date
@@ -161,10 +172,10 @@ object VidVidRecommander {
     if(control_flag.contains("create")) {
       vid_filter(spark, video_idf_path = input_path, filter_vid_path = filter_path, filter_output_path)
 
-      vid_vid_recomm_v2(spark, tag_df_length, clean_input_path = filter_output_path, output_path = vid_recomm_output_path)
+      vid_vid_recomm_v2(spark, tag_df_length, clean_input_path = filter_output_path, output_path = vid_recomm_output_path, vid_recomm_num = vid_recomm_num)
     }
 
-
+    // control_flags是在里面有控制
     put_vid_vid_to_redis(spark, path = vid_recomm_output_path, flags = control_flag.toSeq)
 
 
