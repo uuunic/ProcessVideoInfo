@@ -112,37 +112,44 @@ object GuidRecomType {
 
     val vid_data_res = vid_data_total
       .groupBy($"guid", $"first_recom_id", $"second_recom_id").agg(sum($"percent") as "percent")
+
+
     vid_data_res.write.mode("overwrite").parquet(output_path)
     println(s"write vid_data_monthly to path $output_path done.")
   }
 
-  def put_guid_vid_to_redis(spark: SparkSession, path : String, flags: Seq[String]): Unit = {
-    import spark.implicits._
-    val ip = "100.107.17.215"
-    val port = 9039
-    //val limit_num = 1000
-    val bzid = "uc"
-    val prefix = "G3"
-    val tag_type: Int = 2513
-    val data = spark.read.parquet(path).map(line=>{
-      val guid = line.getString(0)
-      val value_weight = line.getAs[Seq[Row]](1).take(30).map(v=>(v.getString(0), Tools.normalize(v.getDouble(1))))
-      KeyValueWeight(guid, value_weight)
-    })
-      //  .filter(d => Tools.boss_guid.contains(d.key))
-      .cache
+  def put_guid_cat_to_redis(spark: SparkSession, path : String, flags: Set[String]): Unit = {
+    if(flags.contains("put") || flags.contains("delete")) {
+      import spark.implicits._
+      val ip = "100.107.18.16" //1159
+      val port = 9001
+      //val limit_num = 1000
+      val bzid = "uc"
+      val prefix = "cat"
+      val tag_type: Int = -1
+      val data = spark.read.parquet(path)
+        .groupBy($"guid").agg(collect_list(struct($"first_recom_id", $"second_recom_id", $"percent")) as "cat_info")
+        .map(line => {
+        val guid = line.getString(0)
+        val value_weight = line.getAs[Seq[Row]](1).map(v => (s"${v.getInt(0)}.${v.getInt(1)}", v.getDouble(2)))
+          .sortBy(_._2)(Ordering[Double].reverse).take(30)
+        KeyValueWeight(guid, value_weight)
+      })
+        //  .filter(d => Tools.boss_guid.contains(d.key))
+        .cache
 
 
-    val test_redis_pool = new TestRedisPool(ip, port, 40000)
-    val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    if(flags.contains("delete")){
-      Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      val test_redis_pool = new TestRedisPool(ip, port, 40000)
+      val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+      if (flags.contains("delete")) {
+        Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      }
+      if (flags.contains("put")) {
+        Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      }
+      Tools.stat(spark, data, "CAT") // 统计数据
+      println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
     }
-    if(flags.contains("put")){
-      Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-    }
-    println("-----------------[put_guid_vid_to_redis] to redis done, number: " + data.count)
-
   }
 
 
@@ -189,6 +196,8 @@ object GuidRecomType {
         output_path = vid_output_monthly
       )
     }
+
+    put_guid_cat_to_redis(spark, vid_output_monthly, control_flags)
 
 
 

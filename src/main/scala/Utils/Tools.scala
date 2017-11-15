@@ -68,9 +68,10 @@ object Tools {
     get_last_days(30)
   }
 
-  def get_last_days(num: Int = 30, format: String = "yyyyMMdd") : Array[String] = {
+  def get_last_days(num: Int = 30, format: String = "yyyyMMdd", with_today: Boolean = false) : Array[String] = {
     val ret = new ArrayBuffer[String]
-    for(i <- 1 to num) {
+    val day = if(with_today) 0 else 1
+    for(i <- day to num) {
       ret += get_n_day(0 - i)
     }
     ret.toArray

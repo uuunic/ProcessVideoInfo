@@ -1,5 +1,5 @@
 package BasicData
-import Utils.Defines
+import Utils.{Defines, Tools}
 import org.apache.spark.sql.SparkSession
 
 import scala.util.{Success, Try}
@@ -28,22 +28,31 @@ object VidCTR {
   }
 
   def process(spark: SparkSession,
-              input_path: String,
+              input_paths: Seq[String],
               output_path: String,
               click_min: Int = 100,
               exposure_min: Int = 100,
               ztid_filter_set: Set[String]) : Unit = {
     import spark.implicits._
-    println(s"begin to process\n input_path: $input_path, output_path: $output_path")
-    val input = spark.sparkContext.textFile(input_path)
+    println(s"begin to process\n input_path: ${input_paths.mkString(";")}, output_path: $output_path")
+    val input_all = spark.read.textFile(input_paths: _*)
       .map(arr=> arr.split("\t",-1))
-      .filter(_.length >= 4 )
-      .filter(arr => arr(0) != ""&& verify(arr(2),"int") && verify(arr(3),"int"))
+      .filter(_.length >= 6 )
+      .filter(arr => arr(1) != ""&& verify(arr(4),"int") && verify(arr(5),"int"))
 
-      .map(arr => vid_ztid_click_exposure(arr(0),arr(1),arr(2).toInt,arr(3).toInt))
-      .filter(data =>{ztid_filter_set.contains(data.ztid)})
-      .toDS
-      .repartition(REPARTITION_NUM, $"vid")
+      .map(arr => vid_ztid_click_exposure(arr(1),arr(3),arr(5).toInt,arr(4).toInt))
+      val input = {
+        if (ztid_filter_set.contains("ALL")) {
+          input_all
+        } else {
+          input_all.filter(data => {
+            ztid_filter_set.contains(data.ztid)
+          })
+        }
+      }
+      .repartition(REPARTITION_NUM, $"vid").cache()
+    println(s"input has ${input.count} lines.")
+    input.show
     input.createOrReplaceTempView("ctr_data")
     val sql_str = "SELECT vid, ztid, SUM(click) as click, SUM(exposure) as exposure, SUM(click)/SUM(exposure) AS ctr FROM ctr_data GROUP BY vid, ztid"
     val ctr_data = spark.sql(sql_str).repartition(REPARTITION_NUM / 20)
@@ -69,10 +78,11 @@ object VidCTR {
 
     val ztid_filter_set = args(5).split(Defines.FLAGS_SPLIT_STR, -1).toSet
 
-    val input_path = input_path_root + "/ds=" + date + "*"
+    val input_paths = Tools.get_last_days(7, with_today = true).map(day => input_path_root + "/" + day + "*")
+
     val output_path = output_path_root + "/" + date
     process(spark,
-      input_path = input_path,
+      input_paths = input_paths,
       output_path = output_path,
       click_min = click_min,
       exposure_min = exposure_min,
