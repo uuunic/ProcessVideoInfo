@@ -33,8 +33,8 @@ object Test {
           .map(line => {
             line._1 + ":" + tag_type.toString + ":" + line._2.formatted(weight_format)
           })
-        val keys = Array(key)
-        ppl.del(keys: _*)
+//        val keys = Array(key)
+        ppl.del(key)
         ppl.rpush(key, values_data: _*)
         ppl.expire(key, 60 * 60 * 24 * 2) // 这里设置expire_time
 

@@ -121,8 +121,8 @@ object GuidRecomType {
   def put_guid_cat_to_redis(spark: SparkSession, path : String, flags: Set[String]): Unit = {
     if(flags.contains("put") || flags.contains("delete")) {
       import spark.implicits._
-      val ip = "100.107.18.16" //1159
-      val port = 9001
+      val ip = "100.107.17.228" //1159
+      val port = 9100
       //val limit_num = 1000
       val bzid = "uc"
       val prefix = "cat"

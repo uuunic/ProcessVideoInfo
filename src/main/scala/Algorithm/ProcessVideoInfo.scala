@@ -1,10 +1,7 @@
 package Algorithm
 
-import org.apache.spark.sql.{Column, SparkSession, functions}
-import org.apache.spark.sql.functions.lit
-import org.apache.spark.sql.functions.{array, map}
-
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.SparkSession
 
 
 /**
@@ -128,7 +125,20 @@ case class line_video_info(
                             cinema_flag: String, // '院线', 113
                             game_name: String, // '游戏名', 114
                             is_normalized: String, // '是否已标准化', 115
-                            cover_img_quality: String // '封面图质量'
+                            cover_img_quality: String, // '封面图质量' 116
+                            music_style: String, // '音乐风格', 117
+                            subscript: String, // '角标', 118
+                            cover_img_content: String, // '封面图内容',119
+                            cover_img_src: String, // '封面图来源',120
+                            audit_status: String, // '敏感词审核状态',121
+                            audit_cause: String, // '敏感词审核原因',122
+                            original_tag: String, // '原创标记',123
+                            try_duration: String, // '试看时长',124
+                            copyright_id: String, // '版权ID,跟版权方ID不一样',125
+                            playright: String, // '可播放平台列表',126
+                            episode_all_name: String, // '集数（文本）',127
+                            video_content_scale: String, // '视频内容级别',128
+                            c_mtime: String // '修改时间' 129
                           )
 case class line_video_info_simple(b_tag: String, b_duration: Int)
 

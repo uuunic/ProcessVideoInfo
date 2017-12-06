@@ -25,7 +25,7 @@ object UserInterest {
       .map(line=>{
         val guid = line.getString(0)
         val value_weight = line.getAs[Seq[Row]](1)
-          .map(v=>(v.getLong(0).toString, v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct
+          .map(v=>(v.getString(0), v.getDouble(1))).sortBy(_._2)(Ordering[Double].reverse).take(30).distinct
           .map(tp=>(tp._1, Tools.normalize(tp._2)))
           .map(tp=>s"${tp._1}:${tp._2.formatted("%.4f")}")
           .mkString(raw"|")

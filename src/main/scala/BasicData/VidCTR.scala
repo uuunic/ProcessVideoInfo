@@ -37,9 +37,9 @@ object VidCTR {
     println(s"begin to process\n input_path: ${input_paths.mkString(";")}, output_path: $output_path")
     val input_all = spark.read.textFile(input_paths: _*)
       .map(arr=> arr.split("\t",-1))
-      .filter(_.length >= 6 )
+      .filter(_.length >= 7 )
       .filter(arr => arr(1) != ""&& verify(arr(4),"int") && verify(arr(5),"int"))
-
+      .filter(arr => !arr(6).contains("insert")) // 去掉实时插入
       .map(arr => vid_ztid_click_exposure(arr(1),arr(3),arr(5).toInt,arr(4).toInt))
       val input = {
         if (ztid_filter_set.contains("ALL")) {

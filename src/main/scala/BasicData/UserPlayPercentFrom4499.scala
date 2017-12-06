@@ -40,7 +40,7 @@ object UserPlayPercentFrom4499 {
         " from parquet_4499 lateral view json_tuple(get_base64(`data`), \"playduration\") kv " +
         "as playduration " +
         "where step = 50 and  guid != '' and ts != '' and length(vid)=11 and playduration != 0.0"
-    val sql_text_outer = "select guid, ts, vid, playduration, duration, case when duration < 1.0 then 0.2 else playduration/duration end as percent from (" + sql_text_inner + ")"
+    val sql_text_outer = "select guid, ts, vid, case when playduration > duration * 2 then duration * 2 else playduration end as playduration, duration, case when duration < 1.0 then 0.2 else playduration/duration end as percent from (" + sql_text_inner + ")"
     val parquet_4499_res = spark.sqlContext.sql(sql_text_outer)
     println("----------[process 4499 data done, write to: " + res_path + "]----------")
     parquet_4499_res.coalesce(400).write.mode("overwrite").parquet(res_path)

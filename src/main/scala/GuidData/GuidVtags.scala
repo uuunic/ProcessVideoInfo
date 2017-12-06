@@ -221,8 +221,8 @@ object GuidVtags {
   def put_guid_tag_to_redis(spark: SparkSession, path : String, flag: ArrayBuffer[String]): Unit = {
     println("put guid_tag to redis")
     import spark.implicits._
-    val ip = "100.107.17.215"   //sz1159.show_video_hb_online.redis.com
-    val port = 9039
+    val ip = "100.107.18.32"   //sz1159.show_video_hb_online.redis.com
+    val port = 9100
     //val limit_num = 1000
     val bzid = "uc"
     val prefix = "G1"
@@ -242,12 +242,12 @@ object GuidVtags {
     //data.filter(d => Tools.boss_guid.contains(d.key)).show()
     val test_redis_pool = new TestRedisPool(ip, port, 40000)
     val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-    if(flag.contains("delete")) {
+    if(flag.contains("delete") && flag.contains("put")) {
+      Tools.delete_and_put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type)
+    } else if(flag.contains("delete")) {
       Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
       println(s"redis delete done, number: ${data.count}")
-    }
-
-    if(flag.contains("put")) {
+    } else if(flag.contains("put")) {
       Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
       println(s"put to redis done, number: ${data.count}")
     }

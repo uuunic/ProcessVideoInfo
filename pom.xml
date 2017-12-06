@@ -26,8 +26,9 @@
       <artifactId>spark-core_2.11</artifactId>
       <scope>provided</scope>
       <version>2.1.1</version>
-
     </dependency>
+
+
     <dependency> <!-- Spark dependency -->
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_2.11</artifactId>

@@ -4,6 +4,7 @@ import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.Calendar
 
+import BasicData.VidTagsWeightV3.VidTagsWeightWithControl
 import org.apache.hadoop.fs.{FSDataInputStream, Path}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.functions._
@@ -57,16 +58,29 @@ object Tools {
     "d68e02a30b6a1035a4d780fbd42c850a",
     "8b00615f9bc11034a4d780fbd42c850a").toSet
 
+ /**
+   * 时间转时间戳
+   * */
+  def tranTimeToLong(tm:String, format: String = "yyyy-MM-dd HH:mm:ss") :Long={
+    val fm = new SimpleDateFormat(format)
+    val dt = fm.parse(tm)
+    val aa = fm.format(dt)
+    val tim: Long = dt.getTime
+    tim / 1000
+  }
 
+  /**
+    * 获取距今N天的时间字符串
+    * @param N 之后N天，可以为负数
+    * @param format 时间字符串格式
+    * */
   def get_n_day(N: Int, format: String = "yyyyMMdd"): String= {
     var dateFormat: SimpleDateFormat = new SimpleDateFormat(format)
     var cal: Calendar = Calendar.getInstance()
     cal.add(Calendar.DATE, N)
     dateFormat.format(cal.getTime)
   }
-  def get_last_month_date_str(format: String= "yyyyMMdd") : Array[String] = {
-    get_last_days(30)
-  }
+
 
   def get_last_days(num: Int = 30, format: String = "yyyyMMdd", with_today: Boolean = false) : Array[String] = {
     val ret = new ArrayBuffer[String]
@@ -75,6 +89,10 @@ object Tools {
       ret += get_n_day(0 - i)
     }
     ret.toArray
+  }
+
+  def get_last_month_date_str(format: String= "yyyyMMdd") : Array[String] = {
+    get_last_days(30)
   }
 
   def diff_date(date1: String, date2: String): Int = {
@@ -205,9 +223,13 @@ object Tools {
     }
   }
 
-  def normalize(x: Double): Double = {
+  def normalize(x: Double, max: Int = 1, exp_num:Double = 2.3): Double = {
     // 2/(1+exp(-2.3 *x)) -1
-    2 / (1 + Math.exp(-2.3 * x)) - 1
+    2 * max / (1 + math.exp(-exp_num * x)) - 1
+  }
+
+  def normalize_guid_weight(x: Double): Double = {
+    math.log(1.0 + x)
   }
 
   case class KeyValueWeight(key: String, value_weight: Seq[(String, Double)])
@@ -224,7 +246,7 @@ object Tools {
     val output = if(limit_num == -1) input else input.limit(limit_num)
 
     //要写入redis的数据，RDD[Map[String,String]]
-    output.repartition(30).foreachPartition { iter =>
+    output.repartition(10).foreachPartition { iter =>
       //val redis = new Jedis(ip, port, expire_time)
       val redis = broadcast_redis_pool.value.getRedisPool.getResource   // lazy 加载 应该可以用
       val ppl = redis.pipelined() //使用pipeline 更高效的批处理
@@ -243,10 +265,8 @@ object Tools {
 
         })
         val keys = Array(key)
-        //ppl.del(keys: _*)
         ppl.rpush(key, values_data: _*)
         ppl.expire(key, 60*60*24*7)
-
 
         count += 1
         if(count % 20 == 0) {  // 每写20条同步一次
@@ -282,12 +302,8 @@ object Tools {
           line._1 + ":" + tag_type.toString + ":" + line._2.formatted(weight_format)
 
         })
-        val keys = Array(key)
-        ppl.del(keys: _*)
-        //ppl.rpush(key, values_data: _*)
-        //ppl.expire(key, 60*60*24*2)
-
-
+//        val keys = Array(key)
+        ppl.del(key)
         count += 1
         if(count % 30 == 0) {
           ppl.sync()
@@ -296,6 +312,101 @@ object Tools {
       ppl.sync()
       redis.close()
 
+    }
+  }
+
+  def delete_and_put_to_redis(input: Dataset[KeyValueWeight],
+                              broadcast_redis_pool: Broadcast[TestRedisPool],
+                              bzid: String,
+                              prefix: String,
+                              tag_type: Int,
+                              weight_format: String = "%.4f",
+                              expire_time: Int = 60 * 60 * 24 * 7): Unit = {
+    println("put_and_delete in redis.")
+
+
+    //要写入redis的数据，RDD[Map[String,String]]
+    input.repartition(400).foreachPartition { iter =>
+      val redis = broadcast_redis_pool.value.getRedisPool.getResource // lazy 加载 应该可以用
+      val ppl = redis //使用pipeline 更高效的批处理
+
+      var count = 0
+      iter.foreach(f => {
+        val key = bzid + "_" + prefix + "_" + f.key
+        val values_data = f.value_weight.sortWith(_._2 > _._2).map(line => {
+          line._1 + {
+            if (tag_type == -1)
+              ""
+            else
+              ":" + tag_type.toString
+          } +
+            ":" + line._2.formatted(weight_format)
+        })
+//        val keys = Array(key)
+        ppl.del(key)
+        ppl.rpush(key, values_data: _*)
+        ppl.expire(key, expire_time)
+
+        count += 1
+        if (count % 20 == 0) { // 每写20条同步一次
+//          ppl.sync()
+        }
+      })
+//      ppl.sync()
+      redis.close()
+    }
+  }
+
+
+  def delete_and_put_with_play_control( input: Dataset[VidTagsWeightWithControl],
+                                        broadcast_redis_pool: Broadcast[TestRedisPool],
+                                        bzid: String,
+                                        prefix: String,
+                                        tag_type: Int,
+                                        weight_format: String = "%.4f",
+                                        expire_time: Int = 60 * 60 * 24 * 7): Unit = {
+    println("delete_and_put_with_play_control in redis.")
+
+    input.repartition(30).foreachPartition { iter =>
+      val redis = broadcast_redis_pool.value.getRedisPool.getResource // lazy 加载 应该可以用
+
+      iter.foreach(f => {
+        val key = bzid + "_" + prefix + "_" + f.vid
+        val values_data = f.tag_info_list.sortBy(_.weight)(Ordering[Double].reverse).map(line => {
+          line.tagid + {
+            if (tag_type == -1)
+              ""
+            else
+              ":" + tag_type.toString
+          } +
+            ":" + line.weight.formatted(weight_format)
+        })
+//        val keys = Array(key)
+
+        // 只取第一个 控制字
+        val control_flag_list = redis.lrange(key, 0, 0)
+
+        val new_control_line =
+          if (control_flag_list.size == 0) { //如果key不存在
+            val new_is_normal = if (f.is_normal) 1 else 0
+            f.timestamp + "#" + new_is_normal
+          } else if (!control_flag_list.get(0).contains("#") || control_flag_list.get(0).split("#", -1)(0).toLong < f.timestamp) { // 如果key存在，但是没有控制字 或  控制字的时间太旧
+            val new_is_normal = if (f.is_normal) 1 else 0
+            f.timestamp + "#" + new_is_normal
+          } else { // 其余，用redis里的
+            control_flag_list.get(0)
+          }
+//          f.timestamp + "#" + {if(f.is_normal) 0 else 1}
+
+        redis.del(key)
+        // 左边写入媒控信息
+        redis.lpush(key, new_control_line)
+        // 依次push weight信息
+        redis.rpush(key, values_data: _*)
+        redis.expire(key, expire_time)
+      })
+
+      redis.close()
     }
   }
 

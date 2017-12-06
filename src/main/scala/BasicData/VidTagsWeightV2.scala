@@ -662,70 +662,47 @@ object VidTagsWeightV2 {
 
   }
 
-  def put_vid_tag_to_redis(spark: SparkSession, path : String, control_flags: Set[String], data_type: String = "v0"): Unit = {
-    println("put vid_tag to redis")
-    if(control_flags.contains("delete") || control_flags.contains("put")) {
-      import spark.implicits._
-      val ip = "100.107.17.228" // zkname sz1163.short_video_tg2vd.redis.com
-      val port = 9014
-      //val limit_num = 1000
-      val bzid = "sengine"
-      val prefix = s"${data_type}_sv_vd2tg"
-      val tag_type: Int = 2501
-      val data = spark.read.parquet(path).map(line => {
-        val vid = line.getString(0)
-        val value_weight = line.getAs[Seq[Row]](2)
-          .map(v => (v.getLong(1).toString, v.getDouble(2))).distinct.sortWith(_._2 > _._2) //_1 tag _2 tag_id _3 weight
-          .take(100)
-        KeyValueWeight(vid, value_weight)
-      })
-      //data.collect().foreach(line=>println(line.key))
-      //println("\n\n\n\n")
-      val test_redis_pool = new TestRedisPool(ip, port, 40000)
-      val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-      if (control_flags.contains("delete")) {
-        Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-      }
-      if (control_flags.contains("put")) {
-        Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-      }
-      println("put to redis done, number: " + data.count)
-      Tools.stat(spark, data, s"V1_test_$data_type")
-    }
-  }
 
-  def put_tag_vid_to_redis(spark: SparkSession, path : String, control_flags:Set[String], data_type: String = "v0"): Unit = {
-    val res_path = path
-    if(control_flags.contains("delete") || control_flags.contains("put")) {
-      import spark.implicits._
 
-      val ip = "100.107.18.31" // zkname sz1163.short_video_tg2vd.redis.com
-      val port = 9000
-      //val limit_num = 1000
-      val bzid = "sengine"
-      val prefix = s"${data_type}_sv_tg2vd"
-      val tag_type: Int = -1 // 不需要字段中加入tag_type,就设置成-1
-
-      val data = spark.read.parquet(res_path).as[KeyValueWeight].cache()
-      println(s"put tag_vid to redis, data_type: $data_type, number： ${data.count()}")
-      //data.collect().foreach(line=>println(line.key))
-      //println("\n\n\n\n")
-      val test_redis_pool = new TestRedisPool(ip, port, 40000)
-      val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
-      if (control_flags.contains("delete")) {
-        Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-      }
-      if (control_flags.contains("put")) {
-        Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
-      }
-      println("put tag_vid to redis done")
-      Tools.stat(spark, data, s"T1_test_$data_type")
-    }
-  }
-
-  // 不过内容池，在写的时候再过内容池
-  def join_vid_tag(spark: SparkSession, vtag_path: String, qtag_path: String, output_path: String): Unit = {
+  // 不过内容池，在写的时候再过内容池，加入vid的播控信息
+  def join_vid_tag(spark: SparkSession, vtag_path: String, qtag_path: String, video_info_path: String, output_path: String): Unit = {
     import spark.implicits._
+    // play_control data
+    val play_control_data = spark.sparkContext.textFile(video_info_path)
+      .map(line => line.split("\t", -1))
+      .filter(_.length > 116)
+      .filter(line => line(59) == "4") // 在线上
+      .filter(line=>line(1).length == 11) //vid长度为11
+      .map(arr => {
+      val vid = arr(1)
+
+      /**
+      1505276 - 低俗
+      1512774 - 正常
+      1530844 - 惊悚
+      1565745 - 恶心
+        * */
+      val video_pic_scale = arr(99).toInt // '视频图片尺度', 99
+
+      /**
+      1505275 - 低俗
+      1512760 - 标题党
+      1512772 - 正常
+      1565744 - 恶心
+        * */
+      val video_title_scale = arr(113).toInt  // 标题尺度
+
+      /**
+      1487112 - 正常
+      1487114 - 低俗
+      1493303 - 惊悚
+      1494973 - 暴力
+      1565743 - 恶心
+        * */
+      val content_level = arr(87).toInt // 内容尺度
+
+    })
+
     val vtag_data = spark.read.parquet(vtag_path)
       .map(line=>{
         val vid = line.getString(0)
@@ -735,6 +712,7 @@ object VidTagsWeightV2 {
         KeyValueWeight(vid, value_weight)
       }).toDF("vid_v", "vtag_weight")
 
+    // qtag data
     val qtag_data = spark.read.parquet(qtag_path).as[KeyValueWeight].toDF("vid_q", "qtag_weight")
 
     val joined_data = vtag_data.join(qtag_data, $"vid_v" === qtag_data("vid_q"), "outer")
@@ -824,7 +802,90 @@ object VidTagsWeightV2 {
     println(s"join_tag_vid done, put to path $output_path, number: ${result.count}")
     result.write.mode("overwrite").parquet(output_path)
 
+  }
 
+  /**
+    * write to redis
+    * @param path vid-tags 总的正排数据
+    * @param filter_path vid_filter的位置，需要过滤下内容池再写入
+    * @param control_flags put or delete
+    * @param data_type put key 的版本号
+    *
+    * */
+  def put_vid_tag_to_redis(spark: SparkSession,
+                           path : String,
+                           filter_path: String,
+                           control_flags: Set[String],
+                           data_type: String = "v0"): Unit = {
+
+    if(control_flags.contains("delete") || control_flags.contains("put")) {
+      println("put vid_tag to redis")
+      import spark.implicits._
+      val ip = "100.107.17.229" // zkname sz1162.short_video_vd2tg.redis.com
+      val port = 9014
+      val bzid = "sengine"
+      val prefix = s"${data_type}_sv_vd2tg"
+      val tag_type: Int = 2501
+      // filter the vid
+      val vid_filter = spark.read.json(filter_path).toDF("key").cache
+      vid_filter.show
+
+      val data_all = spark.read.parquet(path).as[KeyValueWeight]
+
+      val data = data_all.map(line => {
+        val vid = line.key
+        val value_weight = line.value_weight
+          .distinct.sortBy(_._2)(Ordering[Double].reverse) //_1 tag _2 tag_id _3 weight
+          .take(100)
+        KeyValueWeight(vid, value_weight)
+      })
+        .join(vid_filter, "key").as[KeyValueWeight]
+        .cache
+
+
+
+
+      val test_redis_pool = new TestRedisPool(ip, port, 40000)
+      val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+      if (control_flags.contains("delete")) {
+        Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      }
+      if (control_flags.contains("put")) {
+        Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      }
+      println("put to redis done, number: " + data.count)
+      Tools.stat(spark, data, s"V1_test_$data_type")
+    }
+  }
+
+  def put_tag_vid_to_redis(spark: SparkSession, path : String, control_flags:Set[String], data_type: String = "v0"): Unit = {
+    val res_path = path
+    if(control_flags.contains("delete") || control_flags.contains("put")) {
+      println("put tag_vid to redis")
+      import spark.implicits._
+
+      val ip = "100.107.18.31" // zkname sz1163.short_video_tg2vd.redis.com
+      val port = 9000
+      //val limit_num = 1000
+      val bzid = "sengine"
+      val prefix = s"${data_type}_sv_tg2vd"
+      val tag_type: Int = -1 // 不需要字段中加入tag_type,就设置成-1
+
+      val data = spark.read.parquet(res_path).as[KeyValueWeight].cache()
+      println(s"put tag_vid to redis, data_type: $data_type, number： ${data.count()}")
+      //data.collect().foreach(line=>println(line.key))
+      //println("\n\n\n\n")
+      val test_redis_pool = new TestRedisPool(ip, port, 40000)
+      val broadcast_redis_pool = spark.sparkContext.broadcast(test_redis_pool)
+      if (control_flags.contains("delete")) {
+        Tools.delete_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      }
+      if (control_flags.contains("put")) {
+        Tools.put_to_redis(data, broadcast_redis_pool, bzid, prefix, tag_type /*, limit_num = 1000 */)
+      }
+      println("put tag_vid to redis done")
+      Tools.stat(spark, data, s"T1_test_$data_type")
+    }
   }
 
   def main(args: Array[String]) {
@@ -896,10 +957,11 @@ object VidTagsWeightV2 {
     val tags_output = output_path + "/all_vid_tags/" + date_str
     val tags_vid_output = output_path + "/all_tags_vid/" + date_str
     if(control_flags.contains("join_vid_tags")) {
-      join_vid_tag(spark, vtag_path = clean_output_path, qtag_path = vid_qtag_path, output_path = tags_output)
+//      join_vid_tag(spark, vtag_path = clean_output_path, qtag_path = vid_qtag_path, output_path = tags_output)
       join_tag_vid(spark, vtag_path = vtag_vid_path, qtag_path = qtag_vid_path, ctr_path = ctr_path, output_path = tags_vid_output)
     }
 
+    put_vid_tag_to_redis(spark, path = tags_output, filter_path = vid_filter_path, control_flags = control_flags, data_type = data_type)
     put_tag_vid_to_redis(spark, path = tags_vid_output, control_flags = control_flags, data_type = data_type)
 
 
